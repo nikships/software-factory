@@ -30,7 +30,7 @@ const phaseSchema = z.object({
     .array(
       z.union([
         z.string(),
-        z.object({ gate: z.string(), config: z.record(z.unknown()).optional() }),
+        z.object({ gate: z.string(), config: z.record(z.string(), z.unknown()).optional() }),
       ]),
     )
     .optional(),
