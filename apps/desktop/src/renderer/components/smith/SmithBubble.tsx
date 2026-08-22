@@ -17,6 +17,7 @@ import { useApp } from '../../stores/app.js';
 import { useSmithChat } from '../../hooks/useSmithChat.js';
 import { useEscapeToClose } from '../../hooks/useEscapeToClose.js';
 import SmithProposalCard, { type SmithNavTarget } from './SmithProposalCard.js';
+import SmithScopePicker from './SmithScopePicker.js';
 import SmithTranscript from './SmithTranscript.js';
 import { Button } from '../ui/Button.js';
 import { SmithEmblem } from '../layout/SidebarEmblems.js';
@@ -25,17 +26,19 @@ import styles from './SmithBubble.module.css';
 export default function SmithBubble({
   screenContext,
   onExpand,
-  onApproved,
+  onCompleted,
 }: {
   /** What the operator is looking at right now, sent with each message. */
   screenContext: SmithScreenContext;
   /** Opens the dedicated Smith screen — same session, so the point carries. */
   onExpand: () => void;
   /** Navigates to the saved entity's editor after an approved proposal saves. */
-  onApproved: (target: SmithNavTarget) => void;
+  onCompleted: (target?: SmithNavTarget) => void | Promise<void>;
 }): React.JSX.Element {
-  const { project, projectId } = useApp();
-  const { state, send, cancel, newChat } = useSmithChat(projectId);
+  const { projects, smithProjectId } = useApp();
+  const smithProject = projects.find((project) => project.id === smithProjectId) ?? null;
+  const scopeId = smithProjectId ?? undefined;
+  const { state, send, cancel, newChat } = useSmithChat(scopeId);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
   const [proposalPending, setProposalPending] = useState(false);
@@ -63,7 +66,7 @@ export default function SmithBubble({
   useEffect(() => {
     wasRunningRef.current = false;
     setFinishedWhileClosed(false);
-  }, [projectId]);
+  }, [scopeId]);
 
   // The "long task finished" badge: a running→settled edge observed while the
   // popover is closed. Reading `open` through a ref keeps the edge detector
@@ -89,7 +92,7 @@ export default function SmithBubble({
 
   const submit = (): void => {
     const text = draft.trim();
-    if (!text || running || !projectId) return;
+    if (!text || running) return;
     setDraft('');
     void send(text, screenContext);
     inputRef.current?.focus();
@@ -118,17 +121,12 @@ export default function SmithBubble({
               <SmithEmblem size={15} className={styles.identityMark} />
               Smith
             </span>
-            {project && (
-              <span className={styles.scopeChip} title={project.path}>
-                {project.name}
-              </span>
-            )}
+            <SmithScopePicker running={running} />
             <span className={styles.headSpacer} />
             <button
               type="button"
               className={styles.headAction}
               onClick={() => void newChat()}
-              disabled={!projectId}
               title="New chat — wipes the conversation and starts fresh"
               aria-label="New chat"
               data-testid="smith-bubble-new-chat"
@@ -189,16 +187,16 @@ export default function SmithBubble({
             compact
             emptyState={
               <div className={styles.empty}>
-                {project ? (
-                  <p>Ask Smith anything about {project.name} — entities, readiness, runs.</p>
+                {smithProject ? (
+                  <p>Ask Smith anything about {smithProject.name} — entities, readiness, runs.</p>
                 ) : (
-                  <p>Add a project from the sidebar. Smith works inside that project's checkout.</p>
+                  <p>Ask Smith to inspect and manage Foundry across all projects.</p>
                 )}
               </div>
             }
             tail={
               <div className={styles.cardSlot}>
-                <SmithProposalCard onApproved={onApproved} />
+                <SmithProposalCard projectId={scopeId} onCompleted={onCompleted} />
               </div>
             }
           />
@@ -216,9 +214,8 @@ export default function SmithBubble({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder={project ? 'Message Smith…' : 'Select a project first.'}
+              placeholder={smithProject ? 'Message Smith…' : 'Message Smith across all projects…'}
               rows={1}
-              disabled={!projectId}
               aria-label="Message Smith"
               data-testid="smith-bubble-input"
             />
@@ -230,7 +227,7 @@ export default function SmithBubble({
               <Button
                 size="sm"
                 variant="primary"
-                disabled={!draft.trim() || !projectId}
+                disabled={!draft.trim()}
                 onClick={submit}
                 data-testid="smith-bubble-send"
               >

@@ -21,14 +21,39 @@
  */
 
 import type { ReadinessEntry, ReadinessPhase, ReadinessState } from '@shared/types.js';
+import { IPC } from '@shared/ipc-contract.js';
 import { defineTool, type ToolDefinition } from '../pi/tool-definition.js';
 import { evaluateRepo } from '../readiness/evaluate.js';
 import { readMarkerAtBaseRef } from '../readiness/marker.js';
+import type { MainInvoker } from '../ipc/shared.js';
+import type { ProposalQueue } from './proposals.js';
+import {
+  field,
+  immediate,
+  json,
+  objectField,
+  parseOperation,
+  proposeAction,
+  resolveProjectId,
+  type SmithActionToolDeps,
+} from './tool-helpers.js';
 
 export const READINESS_TOOL_NAMES = [
   'readiness_check',
   'readiness_remediate',
   'readiness_pr_status',
+  'readiness_manage',
+] as const;
+
+export const READINESS_MANAGE_OPERATIONS = [
+  'inspect',
+  'evaluate',
+  'state',
+  'cancel',
+  'skip',
+  'retry',
+  'confirm_merge',
+  'dismiss',
 ] as const;
 
 /**
@@ -68,6 +93,10 @@ export interface ReadinessToolDeps {
   project: () => { path: string; baseRef: string };
   session: ReadinessSessionProvider;
   onProgress: (event: ReadinessProgressEvent) => void;
+  queue: ProposalQueue;
+  projectId: () => string;
+  /** Main-only handler path used by `readiness_manage`. */
+  invoke?: MainInvoker;
 }
 
 const NO_PARAMS: Record<string, unknown> = {
@@ -84,14 +113,6 @@ const LIVE_PHASES: ReadonlySet<ReadinessPhase> = new Set([
   'confirming_merge',
   'finalizing',
 ]);
-
-/** A tool answer is content plus details; these tools answer JSON text. */
-function json(value: unknown): {
-  content: [{ type: 'text'; text: string }];
-  details: undefined;
-} {
-  return { content: [{ type: 'text', text: JSON.stringify(value) }], details: undefined };
-}
 
 /**
  * Folds cloned state snapshots into progress events: each transcript row once,
@@ -200,7 +221,7 @@ export function readinessCheckTool(deps: Pick<ReadinessToolDeps, 'project'>): To
  * branch intact; calling again continues on that same branch.
  */
 export function readinessRemediateTool(
-  deps: Pick<ReadinessToolDeps, 'session' | 'onProgress'>,
+  deps: Pick<ReadinessToolDeps, 'session' | 'onProgress' | 'queue' | 'projectId'>,
 ): ToolDefinition {
   return defineTool({
     name: 'readiness_remediate',
@@ -221,8 +242,15 @@ export function readinessRemediateTool(
           detail: before.detail,
         });
       }
-      const state = await session.makeReady();
-      return json(outcome(state));
+      return proposeAction(deps, {
+        operation: 'remediate',
+        title: 'Make project agent-ready',
+        summary: 'Run the readiness remediator in its isolated readiness worktree.',
+        args: { projectId: deps.projectId() },
+        risk: 'git',
+        projectId: deps.projectId(),
+        execute: async () => ({ ok: true, result: outcome(await session.makeReady()) }),
+      });
     },
   });
 }
@@ -233,7 +261,7 @@ export function readinessRemediateTool(
  * fast-forward — a merged PR on its own is not proof.
  */
 export function readinessPrStatusTool(
-  deps: Pick<ReadinessToolDeps, 'session' | 'onProgress'>,
+  deps: Pick<ReadinessToolDeps, 'session' | 'onProgress' | 'queue' | 'projectId'>,
 ): ToolDefinition {
   return defineTool({
     name: 'readiness_pr_status',
@@ -256,12 +284,25 @@ export function readinessPrStatusTool(
           markerDetail: before.markerDetail,
         });
       }
-      const state = await session.confirmMerge();
-      return json({
-        ...outcome(state),
-        prMerged: !!state.pr?.merged,
-        mergeDetail: state.mergeDetail,
-        ready: state.phase === 'complete' && state.markerValid,
+      return proposeAction(deps, {
+        operation: 'confirm_merge',
+        title: 'Confirm readiness merge',
+        summary: 'Check the readiness PR, fast-forward the base, and verify its marker.',
+        args: { projectId: deps.projectId(), pr: before.pr },
+        risk: 'git',
+        projectId: deps.projectId(),
+        execute: async () => {
+          const state = await session.confirmMerge();
+          return {
+            ok: true,
+            result: {
+              ...outcome(state),
+              prMerged: !!state.pr?.merged,
+              mergeDetail: state.mergeDetail,
+              ready: state.phase === 'complete' && state.markerValid,
+            },
+          };
+        },
       });
     },
   });
@@ -269,5 +310,60 @@ export function readinessPrStatusTool(
 
 /** All three readiness tools, in the order the chat session registers them. */
 export function readinessToolsFor(deps: ReadinessToolDeps): ToolDefinition[] {
-  return [readinessCheckTool(deps), readinessRemediateTool(deps), readinessPrStatusTool(deps)];
+  return [
+    readinessCheckTool(deps),
+    readinessRemediateTool(deps),
+    readinessPrStatusTool(deps),
+    readinessManageTool({
+      queue: deps.queue,
+      projectId: deps.projectId,
+      invoke:
+        deps.invoke ?? (() => Promise.reject(new Error('readiness main invoker is not attached'))),
+    }),
+  ];
+}
+
+export function readinessManageTool(deps: SmithActionToolDeps): ToolDefinition {
+  return defineTool({
+    name: 'readiness_manage',
+    label: 'Readiness management',
+    description: 'Inspect or manage project readiness. Mutating operations require approval.',
+    parameters: {
+      type: 'object',
+      properties: {
+        operation: { type: 'string', enum: [...READINESS_MANAGE_OPERATIONS] },
+        projectId: { type: 'string' },
+        options: { type: 'object' },
+      },
+      required: ['operation'],
+      additionalProperties: false,
+    },
+    execute: async (_id, params) => {
+      const operation = parseOperation(params, READINESS_MANAGE_OPERATIONS);
+      if (!operation) return json({ ok: false, error: 'unknown operation' });
+      const scope = resolveProjectId(field(params, 'projectId'), deps.projectId(), true);
+      if (!scope.ok) return json(scope);
+      const projectId = scope.projectId as string;
+      if (operation === 'inspect') return immediate(deps, IPC.readinessInspect, projectId);
+      if (operation === 'state') return immediate(deps, IPC.readinessGet, projectId);
+      const channel = {
+        evaluate: IPC.readinessEvaluate,
+        cancel: IPC.readinessCancel,
+        skip: IPC.readinessSkip,
+        retry: IPC.readinessRetry,
+        confirm_merge: IPC.readinessConfirmMerge,
+        dismiss: IPC.readinessDismiss,
+      }[operation as Exclude<typeof operation, 'inspect' | 'state'>];
+      const options = operation === 'evaluate' ? objectField(params, 'options') : null;
+      return proposeAction(deps, {
+        operation,
+        title: `${operation.replaceAll('_', ' ')} readiness`,
+        summary: `${operation.replaceAll('_', ' ')} readiness for project ${projectId}.`,
+        args: { projectId, ...(options ? { options } : {}) },
+        risk: operation === 'confirm_merge' ? 'git' : 'write',
+        projectId,
+        execute: () => deps.invoke(channel, projectId, ...(options ? [options] : [])),
+      });
+    },
+  });
 }

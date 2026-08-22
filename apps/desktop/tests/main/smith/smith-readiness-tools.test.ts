@@ -21,13 +21,42 @@ import type { ReadinessIo } from '../../../src/main/readiness/session.js';
 import {
   READINESS_TOOL_NAMES,
   readinessCheckTool,
-  readinessPrStatusTool,
-  readinessRemediateTool,
-  readinessToolsFor,
+  readinessPrStatusTool as productionReadinessPrStatusTool,
+  readinessRemediateTool as productionReadinessRemediateTool,
+  readinessToolsFor as productionReadinessToolsFor,
   type ReadinessProgressEvent,
   type ReadinessSessionSurface,
 } from '../../../src/main/smith/readiness-tools.js';
+import { ProposalQueue } from '../../../src/main/smith/proposals.js';
 import { tempDir } from '../../helpers/tmp.js';
+
+type LegacyDeps = {
+  project?: () => { path: string; baseRef: string };
+  session: (observe: (state: ReadinessState) => void) => ReadinessSessionSurface;
+  onProgress: (event: ReadinessProgressEvent) => unknown;
+};
+
+function approvalDeps(deps: LegacyDeps) {
+  const queue = new ProposalQueue(
+    () => {},
+    async () => ({ ok: true, entity: {} }),
+  );
+  const propose = queue.propose.bind(queue);
+  queue.propose = (input, executor) => {
+    const pending = propose(input, executor);
+    queueMicrotask(() => void queue.answer(queue.list()[0]!.id, { approved: true }));
+    return pending;
+  };
+  return { ...deps, queue, projectId: () => 'proj_1' };
+}
+
+const readinessRemediateTool = (deps: LegacyDeps) =>
+  productionReadinessRemediateTool(approvalDeps(deps));
+const readinessPrStatusTool = (deps: LegacyDeps) =>
+  productionReadinessPrStatusTool(approvalDeps(deps));
+const readinessToolsFor = (
+  deps: LegacyDeps & { project: () => { path: string; baseRef: string } },
+) => productionReadinessToolsFor({ ...approvalDeps(deps), project: deps.project });
 
 function sh(cwd: string, argv: string[]): string {
   return execFileSync(argv[0]!, argv.slice(1), { cwd, encoding: 'utf8' });
@@ -180,7 +209,15 @@ async function answerOf(tool: {
     ctx: undefined,
   ) => Promise<{ content: { type: string; text: string }[] }>;
   const result = await execute('call-1', {}, undefined, undefined, undefined);
-  return JSON.parse(result.content.map((block) => block.text).join('')) as Record<string, unknown>;
+  const answer = JSON.parse(result.content.map((block) => block.text).join('')) as Record<
+    string,
+    unknown
+  >;
+  let unwrapped = answer;
+  while (unwrapped.ok === true && unwrapped.result && typeof unwrapped.result === 'object') {
+    unwrapped = unwrapped.result as Record<string, unknown>;
+  }
+  return unwrapped;
 }
 
 const openPrOk = (number: number) => async () => ({
@@ -470,11 +507,12 @@ describe('readiness_pr_status', () => {
 });
 
 describe('the Smith readiness tool set', () => {
-  it('is exactly the three tools the chat session registers, in order', () => {
+  it('registers all four readiness tools, in order', () => {
     expect([...READINESS_TOOL_NAMES]).toEqual([
       'readiness_check',
       'readiness_remediate',
       'readiness_pr_status',
+      'readiness_manage',
     ]);
     const tools = readinessToolsFor({
       project: () => ({ path: '/tmp/none', baseRef: 'main' }),

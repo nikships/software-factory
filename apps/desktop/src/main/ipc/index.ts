@@ -10,7 +10,8 @@
 
 import { ipcMain } from 'electron';
 import type { AppContext } from '../context.js';
-import type { Handle } from './shared.js';
+import { MainHandlerRegistry } from './shared.js';
+import type { MainInvoker } from './shared.js';
 import * as settings from './settings.js';
 import * as projects from './projects.js';
 import * as roster from './roster.js';
@@ -26,23 +27,27 @@ import * as maintenance from './maintenance.js';
 import * as appRouter from './app.js';
 import * as readiness from './readiness.js';
 
-export function registerIpc(ctx: AppContext): void {
-  const handle: Handle = (channel, fn) => {
-    ipcMain.handle(channel, async (_event, ...args) => fn(...(args as never[])));
-  };
+export function registerIpc(ctx: AppContext): MainInvoker {
+  const registry = new MainHandlerRegistry();
 
-  settings.register(ctx, handle);
-  projects.register(ctx, handle);
-  readiness.register(ctx, handle);
-  roster.register(ctx, handle);
-  envelopes.register(ctx, handle);
-  pipelines.register(ctx, handle);
-  catalog.register(ctx, handle);
-  bridge.register(ctx, handle);
-  runs.register(ctx, handle);
-  prs.register(ctx, handle);
-  smith.register(ctx, handle);
-  companion.register(ctx, handle);
-  maintenance.register(ctx, handle);
-  appRouter.register(ctx, handle);
+  settings.register(ctx, registry.handle);
+  projects.register(ctx, registry.handle);
+  readiness.register(ctx, registry.handle);
+  roster.register(ctx, registry.handle);
+  envelopes.register(ctx, registry.handle);
+  pipelines.register(ctx, registry.handle);
+  catalog.register(ctx, registry.handle);
+  bridge.register(ctx, registry.handle);
+  runs.register(ctx, registry.handle);
+  prs.register(ctx, registry.handle);
+  smith.register(ctx, registry.handle);
+  companion.register(ctx, registry.handle);
+  maintenance.register(ctx, registry.handle);
+  appRouter.register(ctx, registry.handle);
+
+  for (const [channel, handler] of registry.entries()) {
+    ipcMain.handle(channel, async (_event, ...args) => handler(...(args as never[])));
+  }
+
+  return registry.invoke;
 }

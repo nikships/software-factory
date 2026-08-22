@@ -18,21 +18,24 @@ import { useSmithChat } from '../hooks/useSmithChat.js';
 import { SMITH_NO_PROVIDER_COPY } from '../view-models/smith-copy.js';
 import ModelPicker from '../components/common/ModelPicker.js';
 import SmithProposalCard, { type SmithNavTarget } from '../components/smith/SmithProposalCard.js';
+import SmithScopePicker from '../components/smith/SmithScopePicker.js';
 import SmithTranscript from '../components/smith/SmithTranscript.js';
 import { Button } from '../components/ui/Button.js';
 import styles from './SmithScreen.module.css';
 
 export default function SmithScreen({
   screenContext,
-  onApproved,
+  onCompleted,
 }: {
   /** What the operator was looking at before opening Smith, sent with each message. */
   screenContext: SmithScreenContext;
   /** Navigates to the saved entity's editor after an approved proposal saves. */
-  onApproved: (target: SmithNavTarget) => void;
+  onCompleted: (target?: SmithNavTarget) => void | Promise<void>;
 }): React.JSX.Element {
-  const { project, projectId } = useApp();
-  const { state, send, cancel, newChat, setModel } = useSmithChat(projectId);
+  const { projects, smithProjectId } = useApp();
+  const smithProject = projects.find((project) => project.id === smithProjectId) ?? null;
+  const scopeId = smithProjectId ?? undefined;
+  const { state, send, cancel, newChat, setModel } = useSmithChat(scopeId);
   const { models, refresh: refreshModels } = useAgentModels();
   const [draft, setDraft] = useState('');
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -42,7 +45,7 @@ export default function SmithScreen({
 
   const submit = (): void => {
     const text = draft.trim();
-    if (!text || running || !projectId) return;
+    if (!text || running) return;
     setDraft('');
     void send(text, screenContext);
     inputRef.current?.focus();
@@ -61,11 +64,7 @@ export default function SmithScreen({
         <p className="eyebrow">
           <span className="index">07</span>Smith
         </p>
-        {project && (
-          <span className={styles.scopeChip} title={project.path}>
-            {project.name}
-          </span>
-        )}
+        <SmithScopePicker running={running} />
         <div className={styles.headControls}>
           <div className={styles.modelPicker} data-testid="smith-model">
             <ModelPicker
@@ -82,7 +81,6 @@ export default function SmithScreen({
             size="sm"
             variant="ghost"
             onClick={() => void newChat()}
-            disabled={!projectId}
             title="New chat — wipes the conversation and starts fresh"
             aria-label="New chat"
             data-testid="smith-new-chat"
@@ -105,23 +103,18 @@ export default function SmithScreen({
         entries={transcript}
         running={running}
         emptyState={
-          !project ? (
-            <div className={styles.emptyState}>
-              <p>Add a project from the sidebar. Smith works inside that project's checkout.</p>
-            </div>
-          ) : (
-            <div className={styles.emptyState}>
-              <h2 className={styles.emptyTitle}>Smith</h2>
-              <p>
-                Foundry's entity-smith. Ask it to create or edit agents, pipelines, and reports,
-                check whether this repository is agent-ready, or explain a run. Every entity write
-                waits on your approval, right here in the chat.
-              </p>
-              {models.length === 0 && <p className={styles.emptyHint}>{SMITH_NO_PROVIDER_COPY}</p>}
-            </div>
-          )
+          <div className={styles.emptyState}>
+            <h2 className={styles.emptyTitle}>Smith</h2>
+            <p>
+              {smithProject
+                ? `Ask Smith to inspect or operate ${smithProject.name}, including its checkout, entities, readiness, runs, and pull requests.`
+                : 'Ask Smith to inspect or manage Foundry across all projects. Project-specific actions use explicit project IDs.'}{' '}
+              Every privileged action waits on your approval here in the chat.
+            </p>
+            {models.length === 0 && <p className={styles.emptyHint}>{SMITH_NO_PROVIDER_COPY}</p>}
+          </div>
         }
-        tail={<SmithProposalCard onApproved={onApproved} />}
+        tail={<SmithProposalCard projectId={scopeId} onCompleted={onCompleted} />}
       />
 
       {state?.error && (
@@ -138,12 +131,11 @@ export default function SmithScreen({
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder={
-            project
-              ? `Ask Smith anything about ${project.name} — entities, readiness, runs.`
-              : 'Select a project first.'
+            smithProject
+              ? `Ask Smith anything about ${smithProject.name}…`
+              : 'Ask Smith to manage Foundry across all projects…'
           }
           rows={2}
-          disabled={!projectId}
           aria-label="Message Smith"
           data-testid="smith-input"
         />
@@ -155,7 +147,7 @@ export default function SmithScreen({
           ) : (
             <Button
               variant="primary"
-              disabled={!draft.trim() || !projectId}
+              disabled={!draft.trim()}
               onClick={submit}
               data-testid="smith-send"
             >

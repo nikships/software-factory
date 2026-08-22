@@ -7,7 +7,8 @@
  * holds every write behind a human's Approve.
  */
 
-import type { SmithProposal } from '@shared/types.js';
+import type { SmithEntityProposal } from '@shared/types.js';
+import type { MainInvoker } from '../ipc/shared.js';
 import type { SmithChatSession } from './chat-session.js';
 import { ProposalQueue, type ProposalInput } from './proposals.js';
 
@@ -24,6 +25,7 @@ export function readSmithProposalSeed(env: NodeJS.ProcessEnv = process.env): Pro
   try {
     const parsed = JSON.parse(raw) as Partial<ProposalInput>;
     if (
+      parsed.type === 'entity' &&
       (parsed.kind === 'agent' || parsed.kind === 'pipeline' || parsed.kind === 'envelope') &&
       (parsed.mode === 'create' || parsed.mode === 'edit') &&
       typeof parsed.name === 'string' &&
@@ -32,13 +34,35 @@ export function readSmithProposalSeed(env: NodeJS.ProcessEnv = process.env): Pro
       typeof parsed.spec === 'object'
     ) {
       return {
+        type: 'entity',
         kind: parsed.kind,
         mode: parsed.mode,
         name: parsed.name,
         spec: parsed.spec,
         validation: Array.isArray(parsed.validation) ? parsed.validation : [],
         overwrites: parsed.overwrites === true,
-        projectId: typeof parsed.projectId === 'string' ? parsed.projectId : '',
+        ...(typeof parsed.projectId === 'string' ? { projectId: parsed.projectId } : {}),
+      };
+    }
+    if (
+      parsed.type === 'action' &&
+      typeof parsed.operation === 'string' &&
+      parsed.operation &&
+      typeof parsed.title === 'string' &&
+      typeof parsed.summary === 'string' &&
+      parsed.args != null &&
+      typeof parsed.args === 'object' &&
+      typeof parsed.risk === 'string'
+    ) {
+      return {
+        type: 'action',
+        operation: parsed.operation,
+        title: parsed.title,
+        summary: parsed.summary,
+        args: parsed.args as Record<string, unknown>,
+        risk: parsed.risk,
+        ...(typeof parsed.projectId === 'string' ? { projectId: parsed.projectId } : {}),
+        ...(parsed.secretRequest ? { secretRequest: parsed.secretRequest } : {}),
       };
     }
   } catch {
@@ -54,9 +78,11 @@ export interface SmithServiceDeps {
   /** Channel name, passed in so this module does not import the contract twice. */
   channels: { proposalsChanged: string };
   /** Persists an approved proposal; supplied by the IPC layer (store access). */
-  save: (proposal: SmithProposal) => { ok: true; entity: unknown } | { ok: false; error: string };
-  /** Opens one native chat lazily for a project that still exists. */
-  createChat: (projectId: string, proposals: ProposalQueue) => SmithChatSession | null;
+  save: (
+    proposal: SmithEntityProposal,
+  ) => { ok: true; entity: unknown } | { ok: false; error: string };
+  /** Opens one native chat lazily for a project scope or the global scope. */
+  createChat: (projectId: string | undefined, proposals: ProposalQueue) => SmithChatSession | null;
   /** Optional pending proposal to enqueue at construction (tests / e2e). */
   seedProposal?: ProposalInput;
 }
@@ -64,6 +90,7 @@ export interface SmithServiceDeps {
 export class SmithService {
   readonly proposals: ProposalQueue;
   private readonly chats = new Map<string, SmithChatSession>();
+  private invoker: MainInvoker | null = null;
 
   constructor(private readonly deps: SmithServiceDeps) {
     this.proposals = new ProposalQueue(
@@ -74,15 +101,34 @@ export class SmithService {
       (proposal) => Promise.resolve(deps.save(proposal)),
     );
     const seed = deps.seedProposal ?? readSmithProposalSeed();
-    if (seed) void this.proposals.propose(seed);
+    if (seed) {
+      void this.proposals.propose(
+        seed,
+        seed.type === 'action'
+          ? () => ({ ok: true, modelResult: { ok: true, seeded: true } })
+          : undefined,
+      );
+    }
   }
 
-  /** One persistent native conversation per project, opened only on demand. */
-  chat(projectId: string): SmithChatSession | null {
-    const existing = this.chats.get(projectId);
+  /** Attach the collected main-process handlers before any window can use Smith. */
+  attachInvoker(invoker: MainInvoker): void {
+    this.invoker = invoker;
+  }
+
+  /** Narrow callback passed to fixed Smith tools; no renderer can reach it. */
+  readonly invoke: MainInvoker = (channel, ...args) => {
+    if (!this.invoker) return Promise.reject(new Error('Smith main invoker is not attached'));
+    return this.invoker(channel, ...args);
+  };
+
+  /** One persistent native conversation per project/global scope, opened lazily. */
+  chat(projectId?: string): SmithChatSession | null {
+    const key = projectId ?? 'global';
+    const existing = this.chats.get(key);
     if (existing) return existing;
     const chat = this.deps.createChat(projectId, this.proposals);
-    if (chat) this.chats.set(projectId, chat);
+    if (chat) this.chats.set(key, chat);
     return chat;
   }
 

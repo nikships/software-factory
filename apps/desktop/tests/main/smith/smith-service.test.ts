@@ -12,8 +12,10 @@ import {
 } from '../../../src/main/smith/index.js';
 import type { ProposalInput } from '../../../src/main/smith/proposals.js';
 import type { SmithChatSession } from '../../../src/main/smith/chat-session.js';
+import type { MainInvoker } from '../../../src/main/ipc/shared.js';
 
 const seed: ProposalInput = {
+  type: 'entity',
   kind: 'agent',
   mode: 'create',
   name: 'e2e_planner',
@@ -53,13 +55,13 @@ describe('readSmithProposalSeed', () => {
 
 describe('SmithService', () => {
   it('opens one chat per project and reuses it', () => {
-    const created: string[] = [];
+    const created: Array<string | undefined> = [];
     const chats = new Map<string, SmithChatSession>();
     const smith = service({
       createChat: (projectId) => {
         created.push(projectId);
         const chat = fakeChat();
-        chats.set(projectId, chat);
+        chats.set(projectId ?? 'global', chat);
         return chat;
       },
     });
@@ -69,7 +71,18 @@ describe('SmithService', () => {
     expect(first).toBe(again);
     expect(other).not.toBe(first);
     expect(created).toEqual(['proj_1', 'proj_2']);
+    expect(smith.chat()).toBe(smith.chat());
+    expect(created.at(-1)).toBeUndefined();
     expect(smith.chat('missing')).not.toBeNull();
+  });
+
+  it('fails closed until the main invoker is attached, then delegates', async () => {
+    const smith = service();
+    await expect(smith.invoke('test:channel')).rejects.toThrow(/not attached/);
+    const invoke = vi.fn(async () => ({ ok: true })) as unknown as MainInvoker;
+    smith.attachInvoker(invoke);
+    await expect(smith.invoke('test:channel', 'arg')).resolves.toEqual({ ok: true });
+    expect(invoke).toHaveBeenCalledWith('test:channel', 'arg');
   });
 
   it('answers null when createChat cannot open a project', () => {

@@ -8,6 +8,9 @@ Pure types and constants imported by both processes. No `fs`, `child_process`, `
 - `ipc-contract.ts` — `FoundryApi` interface + `IPC.*` channel constants. Both processes import the constants so a rename cannot silently break a call.
 - Boundary values: `null` (unrestricted except protected paths), `[]` (read-only), or an allowlist with `*` (single segment) / `**` (recursive).
 - Model ids are opaque `provider/model` strings from pi's catalog; shared code never validates them against a vendor list.
+- Smith chat scope is optional: absent means the global “All projects” session.
+  `SmithProposal` is an entity/action union. Secret answers and private displays
+  cross only the approval response and never enter `SmithChatState`.
 
 ## Setup Commands
 

@@ -194,7 +194,8 @@ if (!app.requestSingleInstanceLock()) {
       : join(here, '../../assets');
 
     ctx = new AppContext(supportDir, assetsRoot);
-    registerIpc(ctx);
+    const invoke = registerIpc(ctx);
+    ctx.smith.attachInvoker(invoke);
     buildMenu();
 
     // A run whose engine died with the app can never finish on its own.

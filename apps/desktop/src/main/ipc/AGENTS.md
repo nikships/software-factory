@@ -5,6 +5,9 @@ Domain routers for the typed IPC seam. The capability flow is single‑way and e
 ## Project Overview
 
 - One router per domain: `app.ts`, `catalog.ts`, `envelopes.ts`, `pipelines.ts`, `projects.ts`, `prs.ts`, `roster.ts`, `runs.ts`, `settings.ts`, `maintenance.ts`, `shared.ts` (re-export + index).
+- `index.ts` first collects those routers into `MainHandlerRegistry`, registers
+  the same functions with Electron, and returns a main-only `MainInvoker` for
+  Smith. The invoker is never exposed through preload or renderer.
 - Handlers surface rejected promises; the renderer observes errors via the typed bridge.
 - Long work returns a handle and progress is observed separately — never `await` an agent turn inside a click handler. Examples: `projects:askAgentCommands` returns a `detectionId`; setup-agent requests return a `setupId`.
 
@@ -28,6 +31,9 @@ To add a new capability:
 5. Call it via `src/renderer/api.ts` through `plain()` so structured‑clone errors are visible.
 
 Keep routers domain‑scoped; update the shared contract before wiring a new channel. `apps/desktop/tests/main/ipc/ipc-clone.test.ts` and `apps/desktop/tests/main/ipc/ipc-surface.test.ts` guard the surface.
+
+Smith tools must map fixed operation enums to fixed `IPC.*` constants. Never
+accept a channel string from the model or dispatch Smith from its coverage map.
 
 ## Testing Instructions
 

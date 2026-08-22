@@ -1,0 +1,24 @@
+.scope {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+}
+
+.label {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+}
+
+.select {
+  min-width: 148px;
+  max-width: 280px;
+  height: 28px;
+  padding: 0 var(--s2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-xs);
+}

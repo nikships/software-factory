@@ -43,13 +43,18 @@ import type {
 } from '../pi/transport.js';
 import { shortId } from '../session/panel-session.js';
 import type { ReadinessProgressEvent } from './readiness-tools.js';
-import { SMITH_CHAT_HARNESS, screenContextBlock } from './system-prompt.js';
+import { SMITH_CHAT_HARNESS, scopeContextBlock, screenContextBlock } from './system-prompt.js';
+
+export type SmithScope =
+  | { kind: 'project'; projectId: string; projectPath: string }
+  | { kind: 'global'; workspace: string };
 
 /** What a tool factory gets to close over: the session's scope, nothing more. */
 export interface SmithToolFactoryContext {
-  projectId: string;
-  /** The project's checkout — the session's working directory. */
-  projectPath: string;
+  projectId?: string;
+  /** Project checkout or the global Smith workspace. */
+  cwd: string;
+  scope: SmithScope;
 }
 
 /**
@@ -64,8 +69,8 @@ export type SmithToolFactory = (ctx: SmithToolFactoryContext) => ToolDefinition[
 
 /** Everything the transport factory needs that only this session knows. */
 export interface SmithTransportRequest {
-  projectId: string;
-  /** The project checkout; Smith's session runs in it, never a worktree. */
+  projectId?: string;
+  /** Project checkout in project scope; private support workspace globally. */
   cwd: string;
   /** The model this session asks for; `inherit` lets the install choose. */
   model: string;
@@ -80,9 +85,7 @@ export interface SmithTransportRequest {
 }
 
 export interface SmithChatSessionDeps {
-  projectId: string;
-  /** The project's checkout. Resolved by the caller; never `process.cwd()`. */
-  projectPath: string;
+  scope: SmithScope;
   /**
    * Where this session's pointer and renderer transcript cache live.
    * Pinned under `<supportDir>/pi/` by the caller, per the never-touch-`~/.pi`
@@ -148,9 +151,12 @@ export class SmithChatSession {
   private readonly absorbTranscript: (event: TransportEvent) => void;
 
   constructor(private readonly deps: SmithChatSessionDeps) {
+    const projectId = deps.scope.kind === 'project' ? deps.scope.projectId : undefined;
+    const cwd = deps.scope.kind === 'project' ? deps.scope.projectPath : deps.scope.workspace;
     const ctx: SmithToolFactoryContext = {
-      projectId: deps.projectId,
-      projectPath: deps.projectPath,
+      ...(projectId ? { projectId } : {}),
+      cwd,
+      scope: deps.scope,
     };
     this.customTools = (deps.toolFactories ?? []).flatMap((factory) => factory(ctx));
     this.customToolNames = this.customTools.map((tool) => tool.name);
@@ -189,7 +195,7 @@ export class SmithChatSession {
   /** A clone for IPC reads and pushes; callers never receive the live array. */
   snapshot(): SmithChatState {
     return {
-      projectId: this.deps.projectId,
+      ...(this.deps.scope.kind === 'project' ? { projectId: this.deps.scope.projectId } : {}),
       model: this.model,
       activeModel: this.activeModel,
       running: this.turnActive,
@@ -302,11 +308,14 @@ export class SmithChatSession {
   private async ensureStarted(): Promise<void> {
     if (this.transport?.alive) return;
     const transport = this.deps.transport({
-      projectId: this.deps.projectId,
-      cwd: this.deps.projectPath,
+      ...(this.deps.scope.kind === 'project' ? { projectId: this.deps.scope.projectId } : {}),
+      cwd:
+        this.deps.scope.kind === 'project'
+          ? this.deps.scope.projectPath
+          : this.deps.scope.workspace,
       model: this.model,
       reasoningEffort: this.deps.reasoningEffort ?? 'medium',
-      harness: SMITH_CHAT_HARNESS,
+      harness: `${SMITH_CHAT_HARNESS}\n\n${scopeContextBlock(this.deps.scope)}`,
       customTools: this.customTools,
       onPermission: (ask) => this.decide(ask),
       onEvent: (event) => {
@@ -338,11 +347,10 @@ export class SmithChatSession {
    * nothing would revert it.
    */
   private decide(ask: PermissionAsk): PermissionDecision {
-    return evaluate(
-      ask,
-      { worktree: this.deps.projectPath, writes: null, protectedPaths: [] },
-      this.customToolNames,
-    ).decision;
+    const cwd =
+      this.deps.scope.kind === 'project' ? this.deps.scope.projectPath : this.deps.scope.workspace;
+    return evaluate(ask, { worktree: cwd, writes: null, protectedPaths: [] }, this.customToolNames)
+      .decision;
   }
 
   private get stateFile(): string {

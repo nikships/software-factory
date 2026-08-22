@@ -31,7 +31,7 @@ import { describeScreen } from './view-models/smith-chat-view.js';
 import styles from './App.module.css';
 
 function AppInner(): React.JSX.Element {
-  const { ready, settings, interrupts, refreshAll, refreshScoped, selectProject } = useApp();
+  const { ready, settings, interrupts, refreshAll, selectProject } = useApp();
   const [view, setView] = useState<View>('runs');
   const [runRequest, setRunRequest] = useState('');
   const [creatingProject, setCreatingProject] = useState(false);
@@ -91,19 +91,17 @@ function AppInner(): React.JSX.Element {
     });
   }, [showToast]);
 
-  // A Smith approve saved the entity; open its editor. The store save already
-  // broadcast settings-changed (which refreshes the app), but refresh scoped
-  // data too so the target is present before the screen's deep-link effect runs.
-  // Every kind Smith can write now has a Design tab, so this no longer detours
-  // an envelope through Settings.
-  const onSmithApproved = useCallback(
-    async (target: SmithNavTarget): Promise<void> => {
-      await refreshScoped();
+  // Refresh all registries after any Smith action. Entity completions also open
+  // the saved item after refreshAll has loaded its current scope.
+  const onSmithCompleted = useCallback(
+    async (target?: SmithNavTarget): Promise<void> => {
+      await refreshAll();
+      if (!target) return;
       setSmithNav({ ...target, nonce: Date.now() });
       setDesignTab(designTabForEntity(target.kind));
       setView('design');
     },
-    [refreshScoped],
+    [refreshAll],
   );
 
   const handleUpdateDownload = useCallback(async (): Promise<void> => {
@@ -269,7 +267,7 @@ function AppInner(): React.JSX.Element {
     main = (
       <SmithScreen
         screenContext={smithContext}
-        onApproved={(target) => void onSmithApproved(target)}
+        onCompleted={(target) => void onSmithCompleted(target)}
       />
     );
   } else if (view === 'settings') {
@@ -339,7 +337,7 @@ function AppInner(): React.JSX.Element {
         <SmithBubble
           screenContext={liveScreenContext}
           onExpand={openSmith}
-          onApproved={(target) => void onSmithApproved(target)}
+          onCompleted={(target) => void onSmithCompleted(target)}
         />
       )}
       {/*

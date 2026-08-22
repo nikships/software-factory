@@ -49,6 +49,8 @@ export interface SeededFixture {
   runId: string;
 }
 
+export type SmithProposalFixture = 'entity' | 'action' | 'secure' | 'none';
+
 function scratchRepo(): string {
   const dir = tempDir('foundry-e2e-repo-');
   const git = (argv: string[]): void => {
@@ -68,7 +70,10 @@ function scratchRepo(): string {
  *
  * The live app stores state at `<userData>/foundry/` (see `src/main/main.ts`).
  */
-export function seedOnboardedFixture(userDataDir?: string): SeededFixture {
+export function seedOnboardedFixture(
+  userDataDir?: string,
+  smithProposal: SmithProposalFixture = 'entity',
+): SeededFixture {
   const root = userDataDir ?? tempDir('foundry-e2e-app-');
   const supportDir = join(root, 'foundry');
   mkdirSync(supportDir, { recursive: true });
@@ -146,7 +151,7 @@ export function seedOnboardedFixture(userDataDir?: string): SeededFixture {
   }
 
   seedSmithChat(supportDir, project.id);
-  seedSmithProposal(supportDir, project.id);
+  if (smithProposal !== 'none') seedSmithProposal(supportDir, project.id, smithProposal);
 
   return {
     userDataDir: root,
@@ -191,27 +196,54 @@ function seedSmithChat(supportDir: string, projectId: string): void {
 }
 
 /** Pending proposal the e2e harness injects via `FOUNDRY_E2E_SMITH_PROPOSAL`. */
-function seedSmithProposal(supportDir: string, projectId: string): void {
+function seedSmithProposal(
+  supportDir: string,
+  projectId: string,
+  fixture: Exclude<SmithProposalFixture, 'none'>,
+): void {
   mkdirSync(join(supportDir, 'smith'), { recursive: true });
-  const input: ProposalInput = {
-    kind: 'agent',
-    mode: 'create',
-    name: E2E_SMITH_PROPOSAL_NAME,
-    spec: {
-      name: E2E_SMITH_PROPOSAL_NAME,
-      purpose: 'E2E fixture agent.',
-      model: 'inherit',
-      reasoningEffort: 'medium',
-      systemPrompt: 'You plan.',
-      userPrompt: 'Work on: {{request}}',
-      writes: [],
-      envelope: 'plan',
-      color: '#5ad2dd',
-    },
-    validation: [],
-    overwrites: false,
-    projectId,
-  };
+  const input: ProposalInput =
+    fixture === 'entity'
+      ? {
+          type: 'entity',
+          kind: 'agent',
+          mode: 'create',
+          name: E2E_SMITH_PROPOSAL_NAME,
+          spec: {
+            name: E2E_SMITH_PROPOSAL_NAME,
+            purpose: 'E2E fixture agent.',
+            model: 'inherit',
+            reasoningEffort: 'medium',
+            systemPrompt: 'You plan.',
+            userPrompt: 'Work on: {{request}}',
+            writes: [],
+            envelope: 'plan',
+            color: '#5ad2dd',
+          },
+          validation: [],
+          overwrites: false,
+          projectId,
+        }
+      : fixture === 'secure'
+        ? {
+            type: 'action',
+            operation: 'set_api_key',
+            title: 'Set Gemini API key',
+            summary: 'Store a direct API key for Google Gemini.',
+            args: { providerId: 'google' },
+            risk: 'credential',
+            secretRequest: { kind: 'api-key', label: 'API key for google' },
+            projectId,
+          }
+        : {
+            type: 'action',
+            operation: 'start',
+            title: 'Start pipeline run',
+            summary: 'Start the prompt pipeline for the E2E project.',
+            args: { projectId, pipelineId: 'prompt', request: 'Build the requested change.' },
+            risk: 'write',
+            projectId,
+          };
   writeFileSync(
     join(supportDir, 'smith', 'pending-proposal.json'),
     `${JSON.stringify(input, null, 2)}\n`,

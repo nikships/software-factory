@@ -8,37 +8,36 @@
  * call until a human answers the inline card. The model naturally waits on the
  * verdict and reads the result.
  *
- * Projects stay read-only and projected: `smith_list` answers `{id, name,
- * path}` only, and every other project op errors. Rejection carries no note —
- * the operator's next chat message is the revision guidance.
+ * Project reads return full definitions. Calls may explicitly target a project;
+ * otherwise agents and pipelines inherit the current conversation scope.
  *
  * These are factories with explicit deps so the chat session that registers
  * them owns the wiring; nothing here reaches for `AppContext` or a store
  * import. Tool typing crosses the pi seam through `pi/tool-definition.ts`.
  */
 
-import type { AgentDef, EnvelopeDef, PipelineDef, ValidationIssue } from '@shared/types.js';
+import type {
+  AgentDef,
+  EnvelopeDef,
+  PipelineDef,
+  ProjectDef,
+  ValidationIssue,
+} from '@shared/types.js';
 import type { Scope } from '../context.js';
 import { defineTool, type ToolDefinition } from '../pi/tool-definition.js';
 import { validate as validateAgent } from '../store/roster.js';
 import { validate as validatePipeline } from '../store/pipelines.js';
 import { validate as validateEnvelope } from '../store/envelopes.js';
 import type { ProposalQueue } from './proposals.js';
+import { field, json, resolveProjectId } from './tool-helpers.js';
 
 export const SMITH_TOOL_NAMES = ['smith_list', 'smith_show', 'smith_propose'] as const;
 
-/** The entity kinds the tools read. Only the first three are ever written. */
+/** The entity kinds the tools read. Only the first three are written here. */
 type EntityKind = 'agent' | 'pipeline' | 'envelope' | 'project';
 
 /** The entity kinds Smith may write. `project` is deliberately not among them. */
 type WritableKind = 'agent' | 'pipeline' | 'envelope';
-
-/** The only shape of a project the tools ever answer with. */
-export interface SmithToolProject {
-  id: string;
-  name: string;
-  path: string;
-}
 
 /**
  * What the tools read. A structural slice rather than `AppContext`, so the
@@ -48,7 +47,7 @@ export interface SmithEntityStores {
   roster: { get(name: string, scope: Scope): AgentDef | null };
   pipelines: { get(id: string, scope: Scope): PipelineDef | null };
   envelopes: { list(): EnvelopeDef[]; get(name: string): EnvelopeDef | null };
-  projects: { list(): { id: string; name: string; path: string }[] };
+  projects: { list(): ProjectDef[] };
   rosterScope(projectId?: string): Scope;
   pipelineScope(projectId?: string): Scope;
   rosterFor(projectId?: string): AgentDef[];
@@ -65,20 +64,6 @@ export interface SmithEntityToolDeps {
    * the chat session outlives any one screen, and absent means global scope.
    */
   projectId: () => string | undefined;
-}
-
-/** A tool answer is content plus details; these tools answer JSON text. */
-function json(value: unknown): {
-  content: [{ type: 'text'; text: string }];
-  details: undefined;
-} {
-  return { content: [{ type: 'text', text: JSON.stringify(value) }], details: undefined };
-}
-
-function field(params: unknown, name: string): unknown {
-  return params && typeof params === 'object'
-    ? (params as Record<string, unknown>)[name]
-    : undefined;
 }
 
 const KIND_VALUES: readonly EntityKind[] = ['agent', 'pipeline', 'envelope', 'project'];
@@ -101,7 +86,7 @@ export function smithListTool(deps: SmithEntityToolDeps): ToolDefinition {
     name: 'smith_list',
     label: 'Smith list',
     description:
-      'List Foundry entities of one kind as JSON. Agents and pipelines resolve against the current project scope. Projects answer id, name, and path only — nothing else about a project is readable.',
+      'List Foundry entities as JSON. Agents and pipelines use projectId when supplied, otherwise the current scope. Projects return complete definitions.',
     parameters: {
       type: 'object',
       properties: {
@@ -110,6 +95,7 @@ export function smithListTool(deps: SmithEntityToolDeps): ToolDefinition {
           enum: [...KIND_VALUES],
           description: 'Which entity kind to list.',
         },
+        projectId: { type: 'string', description: 'Optional target project ID.' },
       },
       required: ['kind'],
       additionalProperties: false,
@@ -117,9 +103,10 @@ export function smithListTool(deps: SmithEntityToolDeps): ToolDefinition {
     execute: (_id, params) => {
       const kind = parseKind(field(params, 'kind'));
       if (!kind) return Promise.resolve(json({ ok: false, error: 'unknown kind' }));
-      const projectId = deps.projectId();
+      const scope = resolveProjectId(field(params, 'projectId'), deps.projectId(), false);
+      if (!scope.ok) return Promise.resolve(json(scope));
       return Promise.resolve(
-        json({ ok: true, kind, entities: listEntities(deps.stores, kind, projectId) }),
+        json({ ok: true, kind, entities: listEntities(deps.stores, kind, scope.projectId) }),
       );
     },
   });
@@ -130,7 +117,7 @@ export function smithShowTool(deps: SmithEntityToolDeps): ToolDefinition {
     name: 'smith_show',
     label: 'Smith show',
     description:
-      'Show one Foundry entity by name (agents, envelopes) or id (pipelines) as JSON. Projects are list-only and cannot be shown.',
+      'Show one Foundry entity by name (agents/envelopes) or ID (pipelines/projects). Agents and pipelines may target projectId.',
     parameters: {
       type: 'object',
       properties: {
@@ -143,6 +130,7 @@ export function smithShowTool(deps: SmithEntityToolDeps): ToolDefinition {
           type: 'string',
           description: 'The entity name (agents, envelopes) or id (pipelines).',
         },
+        projectId: { type: 'string', description: 'Optional target project ID.' },
       },
       required: ['kind', 'name'],
       additionalProperties: false,
@@ -150,17 +138,12 @@ export function smithShowTool(deps: SmithEntityToolDeps): ToolDefinition {
     execute: (_id, params) => {
       const kind = parseKind(field(params, 'kind'));
       if (!kind) return Promise.resolve(json({ ok: false, error: 'unknown kind' }));
-      // Projects are discoverable but never inspectable: `list` already hands
-      // out everything Smith may know about one.
-      if (kind === 'project') {
-        return Promise.resolve(
-          json({ ok: false, error: 'projects are read-only: "show" is not allowed' }),
-        );
-      }
       const rawName = field(params, 'name');
       const name = typeof rawName === 'string' ? rawName : '';
       if (!name) return Promise.resolve(json({ ok: false, error: 'show needs a name' }));
-      const entity = showEntity(deps.stores, kind, name, deps.projectId());
+      const scope = resolveProjectId(field(params, 'projectId'), deps.projectId(), false);
+      if (!scope.ok) return Promise.resolve(json(scope));
+      const entity = showEntity(deps.stores, kind, name, scope.projectId);
       if (!entity) {
         return Promise.resolve(json({ ok: false, error: `no ${kind} named "${name}"` }));
       }
@@ -174,7 +157,7 @@ export function smithProposeTool(deps: SmithEntityToolDeps): ToolDefinition {
     name: 'smith_propose',
     label: 'Smith propose',
     description:
-      'Propose creating or editing a Foundry entity (agent, pipeline, or envelope). The spec validates first — errors return as JSON with no approval raised. A valid spec blocks until the operator approves or rejects it inline; one proposal may be pending at a time. Projects cannot be written.',
+      'Propose creating or editing an agent, pipeline, or envelope. projectId targets a project-local roster/pipeline; omitted means the current project or global set. Validation happens before approval.',
     parameters: {
       type: 'object',
       properties: {
@@ -192,6 +175,7 @@ export function smithProposeTool(deps: SmithEntityToolDeps): ToolDefinition {
           type: 'object',
           description: 'The full entity JSON, exactly as the store would save it.',
         },
+        projectId: { type: 'string', description: 'Optional target project ID.' },
       },
       required: ['kind', 'mode', 'spec'],
       additionalProperties: false,
@@ -211,7 +195,9 @@ export function smithProposeTool(deps: SmithEntityToolDeps): ToolDefinition {
         return json({ ok: false, error: 'propose needs a spec object' });
       }
 
-      const projectId = deps.projectId();
+      const scope = resolveProjectId(field(params, 'projectId'), deps.projectId(), false);
+      if (!scope.ok) return json(scope);
+      const projectId = scope.projectId;
       const { name, issues, overwrites } = prepare(deps.stores, kind, spec, projectId);
       if (!name) return json({ ok: false, error: `${kind} spec is missing its name` });
 
@@ -224,20 +210,22 @@ export function smithProposeTool(deps: SmithEntityToolDeps): ToolDefinition {
       let outcome;
       try {
         outcome = await deps.queue.propose({
+          type: 'entity',
           kind,
           mode,
           name,
           spec,
           validation: warnings,
           overwrites,
-          projectId: projectId ?? '',
+          ...(deps.projectId() ? { projectId: deps.projectId() } : {}),
+          ...(projectId && projectId !== deps.projectId() ? { targetProjectId: projectId } : {}),
         });
       } catch (e) {
         // The one race the model is told to expect: another proposal is pending.
         return json({ ok: false, error: (e as Error).message });
       }
 
-      if (outcome.approved) return json({ ok: true, entity: outcome.entity });
+      if (outcome.approved) return json(outcome.result);
       return json({ ok: false, rejected: true, note: outcome.note });
     },
   });
@@ -247,22 +235,19 @@ function listEntities(stores: SmithEntityStores, kind: EntityKind, projectId?: s
   if (kind === 'agent') return stores.rosterFor(projectId);
   if (kind === 'pipeline') return stores.pipelinesFor(projectId);
   if (kind === 'project') {
-    // Projected down to the three fields Smith may know about a project.
-    return stores.projects.list().map((p): SmithToolProject => ({
-      id: p.id,
-      name: p.name,
-      path: p.path,
-    }));
+    return stores.projects.list();
   }
   return stores.envelopes.list();
 }
 
 function showEntity(
   stores: SmithEntityStores,
-  kind: WritableKind,
+  kind: EntityKind,
   name: string,
   projectId?: string,
 ): unknown {
+  if (kind === 'project')
+    return stores.projects.list().find((project) => project.id === name) ?? null;
   if (kind === 'agent') return stores.roster.get(name, stores.rosterScope(projectId));
   if (kind === 'pipeline') return stores.pipelines.get(name, stores.pipelineScope(projectId));
   return stores.envelopes.get(name);

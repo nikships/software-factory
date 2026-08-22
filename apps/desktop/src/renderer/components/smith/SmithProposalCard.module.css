@@ -67,6 +67,49 @@
   color: var(--accent-bright);
 }
 
+.summary,
+.scopeNote {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--text-sm);
+  line-height: var(--leading);
+}
+
+.scopeNote {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.risk {
+  background: var(--amber-dim);
+  color: var(--amber);
+}
+
+.secretField {
+  display: grid;
+  gap: var(--s2);
+  color: var(--text-dim);
+  font-size: var(--text-sm);
+}
+
+.secretField input {
+  width: 100%;
+  padding: var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+}
+
+.qr {
+  align-self: center;
+  padding: var(--s3);
+  border-radius: var(--r-sm);
+  background: #fff;
+}
+
 .spacer {
   flex: 1;
 }

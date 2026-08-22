@@ -9,6 +9,9 @@ React 19 renderer. Unprivileged: no `fs`, `child_process`, `electron`, or `apps/
 - Bridge: `api.ts` wraps `window.foundry` and eagerly `plain()`-clones args so structured‑clone errors are visible before IPC.
 - Trace consumption: `stores/run.tsx` polls `runs:events` with a `change_id` cursor and merges by `eventId`; `utils/derive.ts` derives usage/duration/model from events (no denormalized columns). `components/inspector/entries.tsx` renders `TranscriptEntry` per event — new events need a switch case or the default silently drops them.
 - Mock: `mockFoundry.ts` backs `window.foundry` when `window.foundry` is absent (vite web preview). Keep it in sync with `FoundryApi`; do not import Node/main behavior into it.
+- Smith's screen and bubble share `smithProjectId`; null means “All projects.”
+  Its proposal card narrows entity/action proposals. Masked secret input and
+  Companion private displays stay component-local and never enter chat state.
 - Factory tokens imported statically in `main.tsx`; keep provider icon + CSS imports narrow.
 
 ## Setup Commands

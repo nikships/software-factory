@@ -14,7 +14,7 @@ import type {
   AgentDef,
   EnvelopeDef,
   PipelineDef,
-  SmithProposal,
+  SmithEntityProposal,
 } from '../../../src/shared/types.js';
 
 const validAgent: AgentDef = {
@@ -51,8 +51,9 @@ const validEnvelope: EnvelopeDef = {
   fields: [{ name: 'severity', type: 'string', required: true }],
 };
 
-function proposal(over: Partial<SmithProposal>): SmithProposal {
+function proposal(over: Partial<SmithEntityProposal>): SmithEntityProposal {
   return {
+    type: 'entity',
     id: 'prop_1',
     kind: 'agent',
     mode: 'create',

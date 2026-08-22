@@ -832,13 +832,55 @@ export interface ValidationIssue {
 // ── Smith (the entity-smith's approval gate) ─────────────────────────────────
 
 /**
- * What Smith proposes writing through its entity tools. One entity, staged for
- * a human to approve before the store is touched. `spec` is the entity JSON as
- * the store would save it (an `AgentDef`, `PipelineDef`, or `EnvelopeDef`),
- * carried as `unknown` because the card only needs to render and forward it.
+ * Smith may read freely, but every privileged action is classified and shown
+ * to the operator before it runs. These labels are deliberately broad enough
+ * for a human risk badge and deliberately not executable channel names.
  */
-export interface SmithProposal {
+export type SmithActionRisk =
+  | 'write'
+  | 'destructive'
+  | 'credential'
+  | 'shell'
+  | 'git'
+  | 'external'
+  | 'network'
+  | 'lifecycle'
+  | 'maintenance';
+
+/** A secret field rendered and retained only inside the approval card. */
+export interface SmithSecretRequest {
+  kind: 'api-key';
+  label: string;
+  placeholder?: string;
+}
+
+/** A result visible only to the renderer, never to Smith or persisted chat. */
+export interface SmithPrivateDisplay {
+  kind: 'companion-pairing';
+  payload: {
+    protocolVersion: number;
+    origin: string;
+    desktopId: string;
+    desktopName: string;
+    secret: string;
+    expiresAt: string;
+  };
+}
+
+interface SmithProposalBase {
   id: string;
+  /** The proposing session's scope. Absent means the global conversation. */
+  projectId?: string;
+  createdAt: string;
+}
+
+/**
+ * One entity staged for a human to approve before the store is touched. `spec`
+ * is validated entity JSON carried as `unknown` because the card only renders
+ * it and the main-process queue owns the executor.
+ */
+export interface SmithEntityProposal extends SmithProposalBase {
+  type: 'entity';
   kind: 'agent' | 'pipeline' | 'envelope';
   mode: 'create' | 'edit';
   /** The entity's identifying name (agents/envelopes) or id (pipelines). */
@@ -849,10 +891,23 @@ export interface SmithProposal {
   validation: ValidationIssue[];
   /** True when a stored entity already carries this name/id — approving overwrites it. */
   overwrites: boolean;
-  /** Which project the proposing session scoped itself to, so save uses the right scope. */
-  projectId: string;
-  createdAt: string;
+  /** Entity store target when it differs from the proposing conversation scope. */
+  targetProjectId?: string;
 }
+
+/** A fixed privileged application action awaiting inline approval. */
+export interface SmithActionProposal extends SmithProposalBase {
+  type: 'action';
+  operation: string;
+  title: string;
+  summary: string;
+  /** Human-readable, redacted arguments. Never contains credentials or pairing payloads. */
+  args: Record<string, unknown>;
+  risk: SmithActionRisk;
+  secretRequest?: SmithSecretRequest;
+}
+
+export type SmithProposal = SmithEntityProposal | SmithActionProposal;
 
 /**
  * The answer a human gives a proposal card. The card sends no `note`: the next
@@ -862,7 +917,21 @@ export interface SmithProposal {
 export interface SmithProposalAnswer {
   approved: boolean;
   note?: string;
+  /**
+   * Accepted only for a proposal declaring `secretRequest`. Main consumes it
+   * after IPC receipt and must never echo or persist it.
+   */
+  secret?: string;
 }
+
+/** Structured card result; private displays stay renderer-local. */
+export type SmithProposalAnswerResult =
+  { ok: true; privateDisplay?: SmithPrivateDisplay } | { ok: false; error: string };
+
+/** Main-only executor outcome. `modelResult` is the sole value returned to Smith. */
+export type SmithProposalExecutionResult =
+  | { ok: true; modelResult: unknown; privateDisplay?: SmithPrivateDisplay }
+  | { ok: false; error: string; retryable?: boolean };
 
 // ── Updater ──────────────────────────────────────────────────────────────────
 

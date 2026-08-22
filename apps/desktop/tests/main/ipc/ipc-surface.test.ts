@@ -8,17 +8,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const registered: string[] = [];
+const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock('electron', () => ({
-  ipcMain: { handle: (channel: string) => registered.push(channel) },
+  ipcMain: {
+    handle: (channel: string, handler: (...args: unknown[]) => unknown) => {
+      registered.push(channel);
+      handlers.set(channel, handler);
+    },
+  },
   app: { getVersion: () => '0.0.0', quit: vi.fn(), relaunch: vi.fn() },
   BrowserWindow: { getAllWindows: () => [], getFocusedWindow: () => null },
   dialog: { showOpenDialog: vi.fn(), showMessageBox: vi.fn() },
   shell: { openPath: vi.fn(), openExternal: vi.fn() },
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const { registerIpc } = (await import('../../../src/main/ipc/index.js')) as any;
+const { registerIpc } = await import('../../../src/main/ipc/index.js');
 const { IPC } = await import('../../../src/shared/ipc-contract.js');
 
 /** Registration only closes over ctx; nothing is read until a handler fires. */
@@ -31,6 +36,7 @@ const invokeChannels = Object.entries(IPC)
 describe('the IPC surface', () => {
   beforeEach(() => {
     registered.length = 0;
+    handlers.clear();
     registerIpc(stubCtx);
   });
 
@@ -40,6 +46,18 @@ describe('the IPC surface', () => {
 
   it('registers each channel once, so no router shadows another', () => {
     expect(new Set(registered).size).toBe(registered.length);
+  });
+
+  it('uses the same collected handler for Electron and direct invocation', async () => {
+    const get = vi.fn(() => ({ source: 'settings' }));
+    registered.length = 0;
+    handlers.clear();
+    const invoke = registerIpc({ settings: { get } } as never);
+
+    await expect(invoke(IPC.settingsGet)).resolves.toEqual({ source: 'settings' });
+    await expect(handlers.get(IPC.settingsGet)?.({})).resolves.toEqual({ source: 'settings' });
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(registered.filter((channel) => channel === IPC.settingsGet)).toHaveLength(1);
   });
 
   it('registers 120 channels, so a deleted handler is not a silent capability loss', () => {

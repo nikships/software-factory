@@ -1,126 +1,151 @@
 /**
- * The proposal queue. A `smith_propose` tool call blocks the calling agent
- * until a human decides, so exactly one proposal may be pending at a time:
- * concurrent writes fail fast rather than stacking a queue the user cannot see.
- *
- * The queue owns the blocking promise. The entity tool enqueues and awaits;
- * the renderer's Approve/Reject answers through `answer`, which resolves that
- * promise and unblocks the tool. This mirrors the engineer-interrupt pattern in
- * `engine/registry.ts`, kept separate because a proposal is not a run event.
+ * Smith's one-slot approval queue. Public proposals are clone-safe data; the
+ * pending entry may additionally retain one main-process executor closure.
+ * Secrets flow from the card straight to that closure and are never copied
+ * into the proposal, transcript, model result, or persisted chat state.
  */
 
 import { randomUUID } from 'node:crypto';
-import type { SmithProposal, ValidationIssue } from '@shared/types.js';
+import type {
+  SmithActionProposal,
+  SmithEntityProposal,
+  SmithProposal,
+  SmithProposalAnswer,
+  SmithProposalAnswerResult,
+  SmithProposalExecutionResult,
+} from '@shared/types.js';
 
-/** What the entity tool hands the queue; the queue assigns id and timestamp. */
-export interface ProposalInput {
-  kind: SmithProposal['kind'];
-  mode: SmithProposal['mode'];
-  name: string;
-  spec: unknown;
-  validation: ValidationIssue[];
-  overwrites: boolean;
-  projectId: string;
-}
+export type EntityProposalInput = Omit<SmithEntityProposal, 'id' | 'createdAt'>;
+export type ActionProposalInput = Omit<SmithActionProposal, 'id' | 'createdAt'>;
+export type ProposalInput = EntityProposalInput | ActionProposalInput;
 
-/**
- * The outcome the blocked tool call receives. `approve` carries the saved
- * entity so the agent can read it; `reject` carries the optional note.
- */
+/** The outcome returned only to the blocked model tool call. */
 export type ProposalOutcome =
-  { approved: true; entity: unknown } | { approved: false; note?: string };
+  { approved: true; result: unknown } | { approved: false; note?: string };
 
-/**
- * How a proposal is settled once a human answers. The queue does not know how
- * to save — the caller (the smith IPC router) does the store write and reports
- * back the persisted entity or an error, and the queue relays it to the tool.
- */
+/** Main-only executor retained beside a public action proposal. */
+export type ProposalExecutor = (
+  answer: SmithProposalAnswer,
+) => Promise<SmithProposalExecutionResult> | SmithProposalExecutionResult;
+
+/** Entity persistence remains the queue's default, retryable executor. */
 export type SaveHandler = (
-  proposal: SmithProposal,
+  proposal: SmithEntityProposal,
 ) => Promise<{ ok: true; entity: unknown } | { ok: false; error: string }>;
 
 interface PendingEntry {
   proposal: SmithProposal;
+  executor: ProposalExecutor;
   resolve: (outcome: ProposalOutcome) => void;
+  executing: boolean;
 }
 
 export class ProposalQueue {
   private pending: PendingEntry | null = null;
 
   constructor(
-    /** Called whenever the pending set changes, so the renderer can refresh. */
     private readonly onChanged: () => void,
-    /** Persists an approved proposal. Supplied by the IPC router. */
     private readonly save: SaveHandler,
   ) {}
 
-  /** The one pending proposal as a list, matching the polled-list convention. */
   list(): SmithProposal[] {
     return this.pending ? [this.pending.proposal] : [];
   }
 
-  /**
-   * Stages a proposal and blocks until it is answered. Rejects immediately with
-   * `proposal_pending` when one is already outstanding — the tool turns that
-   * into a JSON error the agent can wait on and retry.
-   */
-  propose(input: ProposalInput): Promise<ProposalOutcome> {
+  propose(input: ProposalInput, executor?: ProposalExecutor): Promise<ProposalOutcome> {
     if (this.pending) return Promise.reject(new Error('proposal_pending'));
-    const proposal: SmithProposal = {
+
+    const proposal = {
+      ...input,
       id: randomUUID(),
-      kind: input.kind,
-      mode: input.mode,
-      name: input.name,
-      spec: input.spec,
-      validation: input.validation,
-      overwrites: input.overwrites,
-      projectId: input.projectId,
       createdAt: new Date().toISOString(),
-    };
+    } as SmithProposal;
+    const run = executor ?? this.entityExecutor(proposal);
+
     return new Promise<ProposalOutcome>((resolve) => {
-      this.pending = { proposal, resolve };
+      this.pending = { proposal, executor: run, resolve, executing: false };
       this.onChanged();
     });
   }
 
-  /**
-   * Settles the pending proposal. On approve, the save handler runs first; a
-   * failed save leaves the proposal pending and returns false so the card can
-   * show the error rather than silently dismissing. On reject, the note travels
-   * back to the blocked tool call.
-   */
-  async answer(id: string, decision: { approved: boolean; note?: string }): Promise<boolean> {
+  async answer(id: string, answer: SmithProposalAnswer): Promise<SmithProposalAnswerResult> {
     const entry = this.pending;
-    if (!entry || entry.proposal.id !== id) return false;
+    if (!entry || entry.proposal.id !== id) {
+      return { ok: false, error: 'proposal not found' };
+    }
+    if (entry.executing) return { ok: false, error: 'proposal is already executing' };
 
-    if (!decision.approved) {
-      this.pending = null;
-      entry.resolve({ approved: false, note: decision.note });
-      this.onChanged();
-      return true;
+    if (!answer.approved) {
+      this.clear(entry);
+      entry.resolve({ approved: false, note: answer.note });
+      return { ok: true };
     }
 
-    const saved = await this.save(entry.proposal);
-    if (!saved.ok) {
-      // A refused save is not a rejection: the proposal stays pending so the
-      // human can retry once the underlying problem is fixed.
-      return false;
+    if (
+      answer.secret !== undefined &&
+      (entry.proposal.type !== 'action' || !entry.proposal.secretRequest)
+    ) {
+      return { ok: false, error: 'this proposal does not accept a secret' };
     }
-    this.pending = null;
-    entry.resolve({ approved: true, entity: saved.entity });
-    this.onChanged();
-    return true;
+    if (
+      entry.proposal.type === 'action' &&
+      entry.proposal.secretRequest &&
+      !answer.secret?.trim()
+    ) {
+      return { ok: false, error: `${entry.proposal.secretRequest.label} is required` };
+    }
+
+    entry.executing = true;
+    let executed: SmithProposalExecutionResult;
+    try {
+      executed = await entry.executor(answer);
+    } catch (error) {
+      executed = { ok: false, error: message(error), retryable: entry.proposal.type === 'entity' };
+    }
+
+    if (!executed.ok) {
+      if (executed.retryable) {
+        entry.executing = false;
+        return { ok: false, error: executed.error };
+      }
+      this.clear(entry);
+      entry.resolve({ approved: true, result: { ok: false, error: executed.error } });
+      return { ok: false, error: executed.error };
+    }
+
+    this.clear(entry);
+    entry.resolve({ approved: true, result: executed.modelResult });
+    return executed.privateDisplay
+      ? { ok: true, privateDisplay: executed.privateDisplay }
+      : { ok: true };
   }
 
-  /**
-   * Fails any pending proposal so a blocked tool call unblocks on shutdown
-   * rather than hanging forever.
-   */
   cancelAll(): void {
-    if (!this.pending) return;
     const entry = this.pending;
-    this.pending = null;
+    if (!entry) return;
+    this.clear(entry);
     entry.resolve({ approved: false, note: 'Foundry is shutting down' });
+  }
+
+  private entityExecutor(proposal: SmithProposal): ProposalExecutor {
+    if (proposal.type !== 'entity') {
+      throw new Error('action proposals require an executor');
+    }
+    return async () => {
+      const saved = await this.save(proposal);
+      return saved.ok
+        ? { ok: true, modelResult: { ok: true, entity: saved.entity } }
+        : { ok: false, error: saved.error, retryable: true };
+    };
+  }
+
+  private clear(entry: PendingEntry): void {
+    if (this.pending !== entry) return;
+    this.pending = null;
     this.onChanged();
   }
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

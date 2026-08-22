@@ -20,6 +20,8 @@ import type {
   ProjectDef,
 } from '@shared/types.js';
 import { api } from '../api.js';
+import { safeGetItem, safeSetItem } from '../utils/local-store.js';
+import { resolveSmithProjectId } from '../view-models/smith-scope.js';
 
 export interface AppState {
   settings: AppSettings | null;
@@ -29,6 +31,8 @@ export interface AppState {
   envelopes: EnvelopeDef[];
   interrupts: PendingInterrupt[];
   selectedProjectId: string;
+  /** Null selects Smith's global “All projects” conversation. */
+  smithProjectId: string | null;
   ready: boolean;
 }
 
@@ -36,6 +40,7 @@ export interface AppContextValue extends AppState {
   project: ProjectDef | null;
   projectId: string;
   selectProject: (id: string) => void;
+  selectSmithProject: (id: string | null) => void;
   refreshScoped: () => Promise<void>;
   refreshAll: () => Promise<void>;
   refreshInterrupts: () => Promise<void>;
@@ -70,8 +75,14 @@ export function AppProvider({ children }: { children: React.ReactNode }): React.
   const [envelopes, setEnvelopes] = useState<EnvelopeDef[]>([]);
   const [interrupts, setInterrupts] = useState<PendingInterrupt[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
-    () => localStorage.getItem('foundry.project') ?? '',
+    () => safeGetItem('foundry.project') ?? '',
   );
+  const smithPreferenceRef = useRef(safeGetItem('foundry.smithProject'));
+  const [smithProjectId, setSmithProjectId] = useState<string | null>(() => {
+    const stored = smithPreferenceRef.current;
+    if (stored === '__all__') return null;
+    return stored ?? safeGetItem('foundry.project');
+  });
   const [ready, setReady] = useState(false);
 
   const selectedProjectIdRef = useRef(selectedProjectId);
@@ -106,14 +117,24 @@ export function AppProvider({ children }: { children: React.ReactNode }): React.
     if (!nextProjects.some((p) => p.id === scopeId)) {
       scopeId = nextProjects[0]?.id ?? '';
       setSelectedProjectId(scopeId);
-      localStorage.setItem('foundry.project', scopeId);
+      safeSetItem('foundry.project', scopeId);
     }
+
+    const smithScope = resolveSmithProjectId(
+      nextProjects,
+      scopeId,
+      smithProjectId,
+      smithPreferenceRef.current !== null,
+    );
+    if (smithScope !== smithProjectId) setSmithProjectId(smithScope);
+    smithPreferenceRef.current = smithScope ?? '__all__';
+    safeSetItem('foundry.smithProject', smithPreferenceRef.current);
 
     const [nextAgents, nextPipelines] = await loadScoped(scopeId || undefined);
     setAgents(nextAgents);
     setPipelines(nextPipelines);
     setReady(true);
-  }, []);
+  }, [smithProjectId]);
 
   const refreshInterrupts = useCallback(async (): Promise<void> => {
     setInterrupts(await api.interrupts.list());
@@ -121,7 +142,16 @@ export function AppProvider({ children }: { children: React.ReactNode }): React.
 
   const selectProject = useCallback((id: string): void => {
     setSelectedProjectId(id);
-    localStorage.setItem('foundry.project', id);
+    safeSetItem('foundry.project', id);
+    setSmithProjectId(id);
+    smithPreferenceRef.current = id;
+    safeSetItem('foundry.smithProject', id);
+  }, []);
+
+  const selectSmithProject = useCallback((id: string | null): void => {
+    setSmithProjectId(id);
+    smithPreferenceRef.current = id ?? '__all__';
+    safeSetItem('foundry.smithProject', smithPreferenceRef.current);
   }, []);
 
   useEffect(() => {
@@ -170,10 +200,12 @@ export function AppProvider({ children }: { children: React.ReactNode }): React.
       envelopes,
       interrupts,
       selectedProjectId,
+      smithProjectId,
       ready,
       project,
       projectId,
       selectProject,
+      selectSmithProject,
       refreshScoped,
       refreshAll,
       refreshInterrupts,
@@ -190,10 +222,12 @@ export function AppProvider({ children }: { children: React.ReactNode }): React.
       envelopes,
       interrupts,
       selectedProjectId,
+      smithProjectId,
       ready,
       project,
       projectId,
       selectProject,
+      selectSmithProject,
       refreshScoped,
       refreshAll,
       refreshInterrupts,

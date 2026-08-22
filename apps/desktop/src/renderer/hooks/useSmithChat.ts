@@ -7,7 +7,7 @@ import { api } from '../api.js';
  * cloned states over `smith-progress`. Every action re-reads through its own
  * invoke result so the surface never waits on the next push to catch up.
  */
-export function useSmithChat(projectId: string): {
+export function useSmithChat(projectId: string | undefined): {
   state: SmithChatState | null;
   send: (text: string, screen: SmithScreenContext) => Promise<void>;
   cancel: () => Promise<void>;
@@ -19,13 +19,11 @@ export function useSmithChat(projectId: string): {
   useEffect(() => {
     let cancelled = false;
     setState(null);
-    if (projectId) {
-      void api.smith.state(projectId).then((next) => {
-        // A push may land before this snapshot resolves; the push is fresher,
-        // so the snapshot only fills an otherwise-empty surface.
-        if (!cancelled && next) setState((prev) => prev ?? next);
-      });
-    }
+    void api.smith.state(projectId).then((next) => {
+      // A push may land before this snapshot resolves; the push is fresher,
+      // so the snapshot only fills an otherwise-empty surface.
+      if (!cancelled && next) setState((prev) => prev ?? next);
+    });
     const off = api.on('smith-progress', (data) => {
       const next = data as SmithChatState;
       if (next?.projectId === projectId) setState(next);
@@ -38,7 +36,7 @@ export function useSmithChat(projectId: string): {
 
   const send = useCallback(
     async (text: string, screen: SmithScreenContext): Promise<void> => {
-      if (!projectId || !text.trim()) return;
+      if (!text.trim()) return;
       const next = await api.smith.send(projectId, text, screen);
       if (next) setState(next);
     },
@@ -46,20 +44,18 @@ export function useSmithChat(projectId: string): {
   );
 
   const cancel = useCallback(async (): Promise<void> => {
-    if (!projectId) return;
     const next = await api.smith.cancel(projectId);
     if (next) setState(next);
   }, [projectId]);
 
   const newChat = useCallback(async (): Promise<void> => {
-    if (!projectId) return;
     const next = await api.smith.newChat(projectId);
     if (next) setState(next);
   }, [projectId]);
 
   const setModel = useCallback(
     async (model: string): Promise<void> => {
-      if (!projectId || !model.trim()) return;
+      if (!model.trim()) return;
       const next = await api.smith.setModel(projectId, model);
       if (next) setState(next);
     },

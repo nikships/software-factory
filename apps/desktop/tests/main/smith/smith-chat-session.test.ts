@@ -62,8 +62,7 @@ function harness(opts: {
   const modelsRequested: string[] = [];
 
   const deps = (over: Partial<SmithChatSessionDeps> = {}): SmithChatSessionDeps => ({
-    projectId: 'proj_1',
-    projectPath,
+    scope: { kind: 'project', projectId: 'proj_1', projectPath },
     stateDir,
     smithModel: opts.smithModel ?? (() => 'inherit'),
     ...(opts.toolFactories ? { toolFactories: opts.toolFactories } : {}),
@@ -404,7 +403,7 @@ describe('pluggable tools', () => {
   });
 
   it('hands each factory the session scope and registers what it returns', async () => {
-    const scopes: { projectId: string; projectPath: string }[] = [];
+    const scopes: Array<{ projectId?: string; cwd: string; scope: unknown }> = [];
     const factory: SmithToolFactory = (ctx) => {
       scopes.push(ctx);
       return [listTool];
@@ -414,7 +413,13 @@ describe('pluggable tools', () => {
       asks: [[{ tool: 'smith_list', input: {} }]],
     });
     await h.session.send('what agents exist?');
-    expect(scopes).toEqual([{ projectId: 'proj_1', projectPath: h.projectPath }]);
+    expect(scopes).toEqual([
+      {
+        projectId: 'proj_1',
+        cwd: h.projectPath,
+        scope: { kind: 'project', projectId: 'proj_1', projectPath: h.projectPath },
+      },
+    ]);
     // A registered tool's call is allowed by name; the gate on entity writes
     // is the proposal queue inside the tool, not this policy.
     expect(h.scripted.askReplies).toEqual([{ tool: 'smith_list', decision: { outcome: 'allow' } }]);

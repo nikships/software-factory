@@ -5,8 +5,8 @@
  * the same load-bearing rules are asserted at this layer: validation runs
  * BEFORE any card — an invalid propose comes straight back as JSON with
  * nothing enqueued; only a valid spec reaches the proposal queue and blocks.
- * Reads answer from the stores immediately. Projects are list-only and
- * projected to id/name/path. Overwrite is decided by whether the store already
+ * Reads answer from the stores immediately. Projects expose their full
+ * definitions. Overwrite is decided by whether the store already
  * has the name/id.
  */
 
@@ -165,24 +165,23 @@ describe('smith_list / smith_show', () => {
     });
   });
 
-  it('lists projects as id/name/path only, so no project config leaks to the agent', async () => {
+  it('lists full project definitions', async () => {
     const { deps } = makeDeps();
     expect(await answerOf(smithListTool(deps), { kind: 'project' })).toEqual({
       ok: true,
       kind: 'project',
-      entities: [{ id: 'proj_1a2b', name: 'Foundry', path: '/Users/nik/code/foundry' }],
+      entities: [storedProject],
     });
   });
 
-  it('refuses to show a project, raising no card', async () => {
+  it('shows a project by exact id without raising a card', async () => {
     const { deps, queue } = makeDeps();
     const proposeSpy = vi.spyOn(queue, 'propose');
     const res = (await answerOf(smithShowTool(deps), {
       kind: 'project',
       name: 'proj_1a2b',
     })) as { ok: boolean; error: string };
-    expect(res.ok).toBe(false);
-    expect(res.error).toContain('read-only');
+    expect(res).toEqual({ ok: true, kind: 'project', entity: storedProject });
     expect(proposeSpy).not.toHaveBeenCalled();
     expect(queue.list()).toHaveLength(0);
   });
@@ -283,6 +282,8 @@ describe('smith_propose', () => {
     // The valid spec is now pending a human decision.
     await vi.waitFor(() => expect(queue.list()).toHaveLength(1));
     const proposal = queue.list()[0]!;
+    expect(proposal.type).toBe('entity');
+    if (proposal.type !== 'entity') throw new Error('expected entity proposal');
     expect(proposal.mode).toBe('create');
     expect(proposal.overwrites).toBe(false);
 
@@ -300,6 +301,8 @@ describe('smith_propose', () => {
 
     await vi.waitFor(() => expect(queue.list()).toHaveLength(1));
     const proposal = queue.list()[0]!;
+    expect(proposal.type).toBe('entity');
+    if (proposal.type !== 'entity') throw new Error('expected entity proposal');
     expect(proposal.mode).toBe('edit');
     expect(proposal.overwrites).toBe(true);
 
@@ -417,7 +420,10 @@ describe('smith_propose', () => {
       spec: { ...validAgent, envelope: 'not_in_the_library' },
     });
     await vi.waitFor(() => expect(queue.list()).toHaveLength(1));
-    expect(queue.list()[0]!.validation).toEqual([
+    const proposal = queue.list()[0]!;
+    expect(proposal.type).toBe('entity');
+    if (proposal.type !== 'entity') throw new Error('expected entity proposal');
+    expect(proposal.validation).toEqual([
       expect.objectContaining({ level: 'warning', where: 'envelope' }),
     ]);
     await queue.answer(queue.list()[0]!.id, { approved: false });
@@ -450,7 +456,10 @@ describe('smith_propose', () => {
 
     await vi.waitFor(() => expect(queue.list()).toHaveLength(1));
     const proposal = queue.list()[0]!;
-    expect(await queue.answer(proposal.id, { approved: true })).toBe(false);
+    expect(await queue.answer(proposal.id, { approved: true })).toEqual({
+      ok: false,
+      error: 'disk full',
+    });
     // The proposal is still pending; the tool call is still blocked.
     expect(queue.list()).toHaveLength(1);
 

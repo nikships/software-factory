@@ -45,4 +45,48 @@ test.describe('smith / chat', () => {
       await app?.close();
     }
   });
+
+  test('switches to global scope and renders an approval-gated action', async () => {
+    const fixture = seedOnboardedFixture(undefined, 'action');
+    let app: ElectronApplication | undefined;
+    try {
+      const launched = await launchFoundry(fixture.userDataDir);
+      app = launched.app;
+      const { window } = launched;
+      await window.getByTestId('nav-smith').click();
+      const card = window.getByTestId('smith-proposal-card');
+      await expect(card).toContainText('Start pipeline run');
+      await expect(card).toContainText('Build the requested change.');
+      await window.getByTestId('smith-proposal-reject').click();
+      await expect(card).toBeHidden();
+      await window.getByTestId('smith-scope').selectOption('__all__');
+      await expect(window.getByTestId('smith-scope')).toHaveValue('__all__');
+      await expect(window.getByTestId('smith-input')).toBeEnabled();
+    } finally {
+      await app?.close();
+    }
+  });
+
+  test('keeps provider secrets masked and outside proposal text', async () => {
+    const fixture = seedOnboardedFixture(undefined, 'secure');
+    let app: ElectronApplication | undefined;
+    const fixtureSecret = 'e2e-secret-never-render';
+    try {
+      const launched = await launchFoundry(fixture.userDataDir);
+      app = launched.app;
+      const { window } = launched;
+      await window.getByTestId('nav-smith').click();
+      const card = window.getByTestId('smith-proposal-card');
+      const input = window.getByTestId('smith-proposal-secret');
+      await expect(input).toHaveAttribute('type', 'password');
+      await input.fill(fixtureSecret);
+      await expect(card).not.toContainText(fixtureSecret);
+      await expect(window.getByTestId('smith-transcript')).not.toContainText(fixtureSecret);
+      await window.getByTestId('smith-proposal-reject').click();
+      await expect(card).toBeHidden();
+      await expect(window.getByTestId('smith-proposal-secret')).toHaveCount(0);
+    } finally {
+      await app?.close();
+    }
+  });
 });

@@ -42,9 +42,11 @@ describe('SMITH_CHAT_HARNESS', () => {
     expect(SMITH_CHAT_HARNESS).toContain('`show` before `edit`');
   });
 
-  it('keeps the lane: projects list-only, no delete, no run control', () => {
-    expect(SMITH_CHAT_HARNESS).toContain('Projects are read-only and list-only');
-    expect(SMITH_CHAT_HARNESS).toContain('cannot delete entities');
+  it('documents parity approvals and private secret handling', () => {
+    expect(SMITH_CHAT_HARNESS).toContain('Read-only application operations execute immediately');
+    expect(SMITH_CHAT_HARNESS).toContain('API keys are never tool arguments');
+    expect(SMITH_CHAT_HARNESS).toContain('private operator displays');
+    expect(SMITH_CHAT_HARNESS).toContain('All projects scope');
   });
 
   it('drops the CLI reference — the tools carry that contract now', () => {

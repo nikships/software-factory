@@ -233,3 +233,31 @@ Kept and re-plumbed: `smith/proposals.ts` (queue), store `validate()`,
 10. **Docs + tests** — AGENTS.md updates (root, `src/main/smith/`, `readiness/`),
     executor-style tests for the new session/tooling, e2e smoke for the chat
     screen and bubble.
+
+## 9. Capability parity amendment — 2026-08-22
+
+This amendment supersedes the project-list-only and operator-only restrictions
+in §§4 and 6. Smith now has functional parity with the meaningful operations in
+`FoundryApi` without gaining silent autonomy:
+
+- Smith has one persistent conversation per project plus an **All projects**
+  conversation. Project scope retains direct checkout tools; global scope has a
+  private support workspace and requires explicit project IDs.
+- Read-only domain operations execute immediately. Persistent, destructive,
+  credential-bearing, shell/process, Git/PR, run-lifecycle, network, maintenance,
+  and app-lifecycle operations block on the inline approval card.
+- Main collects the existing IPC routers into a main-only invoker. Domain tools
+  map fixed operation enums to fixed existing channels; neither the model nor
+  the renderer receives a generic channel dispatcher.
+- Projects are fully inspectable. Agents, pipelines, and envelopes support the
+  same rename/duplicate/reset/remove actions as their operator UI, and Smith can
+  manage settings, projects, runs, PRs, interrupts, providers, Companion,
+  diagnostics, maintenance, and updates.
+- API key values exist only in the approval card's masked field and the approved
+  main-process executor call. Companion pairing payloads exist only in a private
+  card result. Neither enters a proposal, transcript, `chat-state.json`, log, or
+  model-visible tool result.
+- One proposal remains pending globally. Entity specs still validate before a
+  card is raised; ordinary action failures clear the proposal so Smith can
+  correct and retry. The parity manifest test makes every future invoke channel
+  choose a Smith classification or the sole renderer-only plumbing exclusion.

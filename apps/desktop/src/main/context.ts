@@ -6,7 +6,7 @@
  */
 
 import { app, BrowserWindow } from 'electron';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { AGENT_MARKS_DIR } from './store/agent-marks.js';
@@ -29,7 +29,16 @@ import { UpdaterService } from './updater.js';
 import { SmithService } from './smith/index.js';
 import { SmithChatSession, type SmithToolFactory } from './smith/chat-session.js';
 import { smithListTool, smithProposeTool, smithShowTool } from './smith/entity-tools.js';
-import { readinessToolsFor } from './smith/readiness-tools.js';
+import { smithEntitiesTool } from './smith/entity-action-tools.js';
+import { smithSettingsTool } from './smith/settings-tools.js';
+import { smithProjectsTool } from './smith/project-tools.js';
+import { smithRunsTool } from './smith/run-tools.js';
+import { smithPrsTool } from './smith/pr-tools.js';
+import { smithInterruptsTool } from './smith/interrupt-tools.js';
+import { smithProvidersTool } from './smith/provider-tools.js';
+import { smithCompanionTool } from './smith/companion-tools.js';
+import { smithSystemTool } from './smith/system-tools.js';
+import { readinessManageTool, readinessToolsFor } from './smith/readiness-tools.js';
 import { CompanionHost } from './companion/host.js';
 import { saveProposal } from './ipc/smith.js';
 import { notifyNeedsInput, notifyOutcome, setDockBadge } from './system/notify.js';
@@ -151,9 +160,12 @@ export class AppContext {
       // queue.
       save: (proposal) => saveProposal(this, proposal),
       createChat: (projectId, proposals) => {
-        const project = this.projects.get(projectId);
-        if (!project) return null;
-        const chatRoot = join(supportDir, 'pi', 'smith', projectId);
+        const project = projectId ? this.projects.get(projectId) : null;
+        if (projectId && !project) return null;
+        const scopeKey = projectId ?? 'global';
+        const chatRoot = join(supportDir, 'pi', 'smith', scopeKey);
+        const globalWorkspace = join(chatRoot, 'workspace');
+        if (!project) mkdirSync(globalWorkspace, { recursive: true });
         let chat: SmithChatSession | null = null;
         const toolFactories: SmithToolFactory[] = [
           (toolCtx) => {
@@ -164,28 +176,54 @@ export class AppContext {
             };
             return [smithListTool(deps), smithShowTool(deps), smithProposeTool(deps)];
           },
-          (toolCtx) =>
-            readinessToolsFor({
+          (toolCtx) => {
+            const deps = {
+              invoke: this.smith.invoke,
+              queue: proposals,
+              projectId: () => toolCtx.projectId,
+            };
+            return [
+              smithEntitiesTool(deps),
+              smithSettingsTool(deps),
+              smithProjectsTool(deps),
+              smithRunsTool(deps),
+              smithPrsTool(deps),
+              smithInterruptsTool(deps),
+              smithProvidersTool(deps),
+              smithCompanionTool(deps),
+              smithSystemTool(deps),
+              ...(toolCtx.projectId ? [] : [readinessManageTool(deps)]),
+            ];
+          },
+          (toolCtx) => {
+            const id = toolCtx.projectId;
+            if (!id) return [];
+            return readinessToolsFor({
               project: () => {
-                const current = this.projects.get(toolCtx.projectId);
+                const current = this.projects.get(id);
                 if (!current) throw new Error('project not found');
                 return { path: current.path, baseRef: current.baseRef };
               },
               session: (observe) => {
-                const current = this.projects.get(toolCtx.projectId);
+                const current = this.projects.get(id);
                 if (!current) throw new Error('project not found');
-                smithReadinessObservers.set(toolCtx.projectId, observe);
+                smithReadinessObservers.set(id, observe);
                 return this.readiness.open(current, this.settings.get(), (next) => {
                   const saved = this.projects.save(next);
                   if (saved.ok) this.broadcast(IPC.eventSettingsChanged);
                 });
               },
               onProgress: (event) => chat?.absorbReadinessProgress(event),
-            }),
+              queue: proposals,
+              projectId: () => id,
+              invoke: this.smith.invoke,
+            });
+          },
         ];
         chat = new SmithChatSession({
-          projectId,
-          projectPath: project.path,
+          scope: project
+            ? { kind: 'project', projectId: project.id, projectPath: project.path }
+            : { kind: 'global', workspace: globalWorkspace },
           stateDir: chatRoot,
           smithModel: () => this.settings.get().smithModel,
           toolFactories,

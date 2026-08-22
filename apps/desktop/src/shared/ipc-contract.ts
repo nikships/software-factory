@@ -35,6 +35,7 @@ import type {
   RunRow,
   SmithProposal,
   SmithProposalAnswer,
+  SmithProposalAnswerResult,
   StartRunInput,
   PanelEntry,
   PanelStateCore,
@@ -198,7 +199,8 @@ export interface SmithTranscriptEntry extends PanelEntry {
  * push receives a fresh transcript array, never the session's live one.
  */
 export interface SmithChatState {
-  projectId: string;
+  /** Absent for the global “All projects” conversation. */
+  projectId?: string;
   model: string;
   activeModel: string;
   running: boolean;
@@ -571,18 +573,18 @@ export interface FoundryApi {
   smith: {
     /** Starts one turn and returns immediately; progress arrives on `smith-progress`. */
     send(
-      projectId: string,
+      projectId: string | undefined,
       text: string,
       screen: SmithScreenContext,
     ): Promise<SmithChatState | null>;
-    cancel(projectId: string): Promise<SmithChatState | null>;
-    newChat(projectId: string): Promise<SmithChatState | null>;
-    state(projectId: string): Promise<SmithChatState | null>;
-    setModel(projectId: string, model: string): Promise<SmithChatState | null>;
+    cancel(projectId: string | undefined): Promise<SmithChatState | null>;
+    newChat(projectId: string | undefined): Promise<SmithChatState | null>;
+    state(projectId: string | undefined): Promise<SmithChatState | null>;
+    setModel(projectId: string | undefined, model: string): Promise<SmithChatState | null>;
     /** The one pending proposal, or an empty list. Only ever one at a time. */
     proposalsList(): Promise<SmithProposal[]>;
     /** Approve or reject the pending proposal, unblocking Smith's tool call. */
-    answerProposal(id: string, answer: SmithProposalAnswer): Promise<boolean>;
+    answerProposal(id: string, answer: SmithProposalAnswer): Promise<SmithProposalAnswerResult>;
   };
   companion: {
     /** Host status plus the paired devices. Starts nothing. */

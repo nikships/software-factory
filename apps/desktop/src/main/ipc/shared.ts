@@ -12,6 +12,32 @@ export type Handle = <T>(channel: string, fn: (...args: never[]) => Promise<T> |
 
 export type Router<Ctx = AppContext> = (ctx: Ctx, handle: Handle) => void;
 
+/** A router handler, retained so Electron and main-process callers share it. */
+export type MainHandler = (...args: never[]) => unknown;
+
+/** Main-only invocation path. It always settles sync and async handlers alike. */
+export type MainInvoker = <T = unknown>(channel: string, ...args: unknown[]) => Promise<T>;
+
+/** Collects the complete handler surface before any of it is registered. */
+export class MainHandlerRegistry {
+  readonly #handlers = new Map<string, MainHandler>();
+
+  readonly handle: Handle = (channel, fn): void => {
+    if (this.#handlers.has(channel)) throw new Error(`Duplicate IPC handler: ${channel}`);
+    this.#handlers.set(channel, fn);
+  };
+
+  entries(): IterableIterator<[string, MainHandler]> {
+    return this.#handlers.entries();
+  }
+
+  readonly invoke: MainInvoker = async <T>(channel: string, ...args: unknown[]): Promise<T> => {
+    const handler = this.#handlers.get(channel);
+    if (!handler) throw new Error(`Unknown IPC channel: ${channel}`);
+    return (await handler(...(args as never[]))) as T;
+  };
+}
+
 /** Shared empty issue list: every `ok: true` SaveResult carries the same one. */
 export const noIssues: ValidationIssue[] = [];
 

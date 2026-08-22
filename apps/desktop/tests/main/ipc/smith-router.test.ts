@@ -58,7 +58,7 @@ function harness(chatPresent = true) {
       current = { ...current, model, activeModel: model };
     }),
   };
-  const answer = vi.fn(() => true);
+  const answer = vi.fn(async () => ({ ok: true as const }));
   const handlers = new Map<string, Handler>();
   const handle: Handle = (channel, fn) => handlers.set(channel, fn);
   register(
@@ -138,13 +138,13 @@ describe('Smith chat IPC router', () => {
     await expect(cancel('missing')).resolves.toBeNull();
   });
 
-  it('keeps the proposal answer invoke on the shared queue', () => {
+  it('returns the structured proposal answer from the shared queue', async () => {
     const { handlers, answer } = harness();
     const answerProposal = handlers.get(IPC.smithAnswerProposal) as (
       id: string,
       response: { approved: boolean },
-    ) => boolean;
-    expect(answerProposal('proposal-1', { approved: true })).toBe(true);
+    ) => Promise<{ ok: true }>;
+    await expect(answerProposal('proposal-1', { approved: true })).resolves.toEqual({ ok: true });
     expect(answer).toHaveBeenCalledWith('proposal-1', { approved: true });
   });
 });

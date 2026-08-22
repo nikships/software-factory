@@ -186,14 +186,7 @@ let mockPipelines: PipelineDef[] = BUILTIN_PIPELINES.map((p) => ({ ...p }));
 
 export function createMockFoundryApi(): FoundryApi {
   const listeners = new Map<string, Set<(data?: unknown) => void>>();
-  let smithState: SmithChatState = {
-    projectId: MOCK_PROJECTS[0]!.id,
-    model: mockSettings.smithModel,
-    activeModel: mockSettings.smithModel,
-    running: false,
-    error: null,
-    transcript: [],
-  };
+  const smithStates = new Map<string, SmithChatState>();
 
   function on(channel: string, handler: (data?: unknown) => void): () => void {
     const set = listeners.get(channel) ?? new Set();
@@ -202,13 +195,25 @@ export function createMockFoundryApi(): FoundryApi {
     return () => set.delete(handler);
   }
 
-  const smithSnapshot = (): SmithChatState => ({
-    ...smithState,
-    transcript: smithState.transcript.map((entry) => ({ ...entry })),
-  });
+  const smithKey = (projectId?: string): string => projectId ?? 'global';
+  const smithSnapshot = (projectId?: string): SmithChatState => {
+    const key = smithKey(projectId);
+    const state =
+      smithStates.get(key) ??
+      ({
+        ...(projectId ? { projectId } : {}),
+        model: mockSettings.smithModel,
+        activeModel: mockSettings.smithModel,
+        running: false,
+        error: null,
+        transcript: [],
+      } satisfies SmithChatState);
+    smithStates.set(key, state);
+    return { ...state, transcript: state.transcript.map((entry) => ({ ...entry })) };
+  };
 
-  const emitSmith = (): void => {
-    const state = smithSnapshot();
+  const emitSmith = (projectId?: string): void => {
+    const state = smithSnapshot(projectId);
     listeners.get('smith-progress')?.forEach((handler) => handler(state));
   };
 
@@ -638,14 +643,14 @@ export function createMockFoundryApi(): FoundryApi {
     },
     smith: {
       send: async (projectId, text) => {
-        if (!MOCK_PROJECTS.some((project) => project.id === projectId)) return null;
-        smithState = {
-          ...smithState,
-          projectId,
+        if (projectId && !MOCK_PROJECTS.some((project) => project.id === projectId)) return null;
+        const currentSmithState = smithSnapshot(projectId);
+        let smithState: SmithChatState = {
+          ...currentSmithState,
           running: true,
           error: null,
           transcript: [
-            ...smithState.transcript,
+            ...currentSmithState.transcript,
             {
               id: `operator-${Date.now()}`,
               kind: 'text',
@@ -655,7 +660,8 @@ export function createMockFoundryApi(): FoundryApi {
             },
           ],
         };
-        emitSmith();
+        smithStates.set(smithKey(projectId), smithState);
+        emitSmith(projectId);
         // A canned turn that exercises the chat's visual language: a folded
         // tool row, a readiness sub-agent block, and a text answer.
         smithState = {
@@ -688,31 +694,36 @@ export function createMockFoundryApi(): FoundryApi {
             },
           ],
         };
-        emitSmith();
-        return smithSnapshot();
+        smithStates.set(smithKey(projectId), smithState);
+        emitSmith(projectId);
+        return smithSnapshot(projectId);
       },
       cancel: async (projectId) => {
-        if (smithState.projectId !== projectId) return null;
-        smithState = { ...smithState, running: false };
-        emitSmith();
-        return smithSnapshot();
+        const state = { ...smithSnapshot(projectId), running: false };
+        smithStates.set(smithKey(projectId), state);
+        emitSmith(projectId);
+        return smithSnapshot(projectId);
       },
       newChat: async (projectId) => {
-        if (!MOCK_PROJECTS.some((project) => project.id === projectId)) return null;
-        smithState = { ...smithState, projectId, running: false, error: null, transcript: [] };
-        emitSmith();
-        return smithSnapshot();
+        if (projectId && !MOCK_PROJECTS.some((project) => project.id === projectId)) return null;
+        const state = { ...smithSnapshot(projectId), running: false, error: null, transcript: [] };
+        smithStates.set(smithKey(projectId), state);
+        emitSmith(projectId);
+        return smithSnapshot(projectId);
       },
       state: async (projectId) =>
-        MOCK_PROJECTS.some((project) => project.id === projectId) ? smithSnapshot() : null,
+        !projectId || MOCK_PROJECTS.some((project) => project.id === projectId)
+          ? smithSnapshot(projectId)
+          : null,
       setModel: async (projectId, model) => {
-        if (!MOCK_PROJECTS.some((project) => project.id === projectId)) return null;
-        smithState = { ...smithState, projectId, model, activeModel: model };
-        emitSmith();
-        return smithSnapshot();
+        if (projectId && !MOCK_PROJECTS.some((project) => project.id === projectId)) return null;
+        const state = { ...smithSnapshot(projectId), model, activeModel: model };
+        smithStates.set(smithKey(projectId), state);
+        emitSmith(projectId);
+        return smithSnapshot(projectId);
       },
       proposalsList: async () => [],
-      answerProposal: async () => false,
+      answerProposal: async () => ({ ok: false, error: 'proposal not found' }),
     },
     companion: {
       // The web preview has no network host to bind; the pane renders "off".

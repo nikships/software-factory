@@ -8,7 +8,7 @@ import type {
   AgentDef,
   EnvelopeDef,
   PipelineDef,
-  SmithProposal,
+  SmithEntityProposal,
   SmithProposalAnswer,
 } from '@shared/types.js';
 import { IPC, type SmithChatState, type SmithScreenContext } from '@shared/ipc-contract.js';
@@ -21,7 +21,11 @@ type Ctx = Pick<AppContext, 'smith' | 'broadcast'>;
 export function register(ctx: Ctx, handle: Handle): void {
   handle(
     IPC.smithSend,
-    (projectId: string, text: string, screen: SmithScreenContext): SmithChatState | null => {
+    (
+      projectId: string | undefined,
+      text: string,
+      screen: SmithScreenContext,
+    ): SmithChatState | null => {
       const chat = ctx.smith.chat(projectId);
       if (!chat) return null;
       if (!text.trim()) return chat.snapshot();
@@ -33,14 +37,14 @@ export function register(ctx: Ctx, handle: Handle): void {
     },
   );
 
-  handle(IPC.smithCancel, async (projectId: string): Promise<SmithChatState | null> => {
+  handle(IPC.smithCancel, async (projectId?: string): Promise<SmithChatState | null> => {
     const chat = ctx.smith.chat(projectId);
     if (!chat) return null;
     await chat.cancel();
     return chat.snapshot();
   });
 
-  handle(IPC.smithNewChat, async (projectId: string): Promise<SmithChatState | null> => {
+  handle(IPC.smithNewChat, async (projectId?: string): Promise<SmithChatState | null> => {
     const chat = ctx.smith.chat(projectId);
     if (!chat) return null;
     await chat.newChat();
@@ -49,12 +53,12 @@ export function register(ctx: Ctx, handle: Handle): void {
 
   handle(
     IPC.smithState,
-    (projectId: string): SmithChatState | null => ctx.smith.chat(projectId)?.snapshot() ?? null,
+    (projectId?: string): SmithChatState | null => ctx.smith.chat(projectId)?.snapshot() ?? null,
   );
 
   handle(
     IPC.smithSetModel,
-    async (projectId: string, model: string): Promise<SmithChatState | null> => {
+    async (projectId: string | undefined, model: string): Promise<SmithChatState | null> => {
       const chat = ctx.smith.chat(projectId);
       if (!chat) return null;
       if (!model.trim()) throw new Error('model is required');
@@ -87,9 +91,9 @@ export function saveProposal(
     | 'commandNames'
     | 'broadcast'
   >,
-  proposal: SmithProposal,
+  proposal: SmithEntityProposal,
 ): { ok: true; entity: unknown } | { ok: false; error: string } {
-  const projectId = proposal.projectId || undefined;
+  const projectId = proposal.targetProjectId ?? proposal.projectId;
   const knownEnvelopes = ctx.envelopes.list().map((e) => e.name);
 
   if (proposal.kind === 'agent') {
